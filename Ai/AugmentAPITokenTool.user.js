@@ -1,10 +1,9 @@
 // ==UserScript==
 // @name         !.Ai Augment Tool
 // @description  Augment 全自动自动注册 + 凭证管理工具   -- TODO: 1.自动邮箱；2.自动人机验证
-// @version      2.0.0
+// @version      2.0.1
 // @author       ank
 // @namespace    http://010314.xyz/
-// @match        *://*/*
 // @match        https://augmentcode.com/*
 // @match        https://*.augmentcode.com/*
 // @grant        GM_xmlhttpRequest
@@ -83,6 +82,19 @@
 
   // Balance API
   const balance = {
+    async getBanStatus(tenant, token) {
+      if (!tenant || !token) return 'ERROR';
+      const url = tenant.endsWith('/') ? `${tenant}api/v1/me` : `${tenant}/api/v1/me`;
+      try {
+        await http(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        return 'OK';
+      } catch (status) {
+        if (status === 404) return 'OK';
+        if (status === 403) return 'BANNED';
+        if (status === 402) return 'EXPIRED';
+        return 'ERROR';
+      }
+    },
     async info(token) {
       const sub = await http(`${CFG.orbAPI}/subscriptions_from_link?token=${token}`);
       const subItem = sub.data?.[0];
@@ -97,14 +109,28 @@
       return { email: customer.email, balance: bal.credits_balance, endDate: subItem.end_date, included };
     },
     async check(cred) {
-      if (!cred.subToken) return 'NO_TOKEN';
+      if (cred.token && cred.tenant) {
+        const directStatus = await this.getBanStatus(cred.tenant, cred.token);
+        if (directStatus === 'BANNED' || directStatus === 'EXPIRED') {
+          store.update(cred.id, { status: directStatus, lastBalance: null, lastEndDate: null, lastIncluded: null });
+          return directStatus;
+        }
+      }
+
+      if (!cred.subToken) {
+        store.update(cred.id, { status: 'NO_TOKEN' });
+        return 'NO_TOKEN';
+      }
       try {
         const info = await this.info(cred.subToken);
         const expired = info.endDate && Date.now() > new Date(info.endDate);
-        // 持久化可见信息，供 UI 展示
-        store.update(cred.id, { lastBalance: info.balance, lastEndDate: info.endDate, lastIncluded: info.included });
-        return expired ? 'EXPIRED' : info.balance <= 0 ? 'NO_BALANCE' : 'ACTIVE';
-      } catch { return 'ERROR'; }
+        const status = expired ? 'EXPIRED' : info.balance <= 0 ? 'NO_BALANCE' : 'ACTIVE';
+        store.update(cred.id, { status, lastBalance: info.balance, lastEndDate: info.endDate, lastIncluded: info.included });
+        return status;
+      } catch {
+        store.update(cred.id, { status: 'ERROR' });
+        return 'ERROR';
+      }
     }
   };
 
@@ -171,9 +197,9 @@
     toast(msg, ms = 2000) { const el = this.show(`<div style=\"text-align:center;padding:20px\">${msg}</div>`); setTimeout(() => el.remove(), ms); return el; },
     card(cred, status) {
       const st = status || cred.status || 'UNKNOWN';
-      const badge = { ACTIVE: 'ok', EXPIRED: 'bad', NO_BALANCE: 'bad', ERROR: 'warn', NO_TOKEN: 'muted' }[st] || 'muted';
-      const stateClass = { ACTIVE: 'st-ok', EXPIRED: 'st-bad', NO_BALANCE: 'st-bad', ERROR: 'st-warn', NO_TOKEN: 'st-muted', UNKNOWN: 'st-muted' }[st] || 'st-muted';
-      const text = { ACTIVE: '正常', EXPIRED: '已过期', NO_BALANCE: '余额不足', ERROR: '检测失败', NO_TOKEN: '无令牌' }[st] || '未知';
+      const badge = { ACTIVE: 'ok', EXPIRED: 'bad', NO_BALANCE: 'bad', BANNED: 'bad', ERROR: 'warn', NO_TOKEN: 'muted' }[st] || 'muted';
+      const stateClass = { ACTIVE: 'st-ok', EXPIRED: 'st-bad', NO_BALANCE: 'st-bad', BANNED: 'st-bad', ERROR: 'st-warn', NO_TOKEN: 'st-muted', UNKNOWN: 'st-muted' }[st] || 'st-muted';
+      const text = { ACTIVE: '正常', EXPIRED: '已过期', NO_BALANCE: '余额不足', BANNED: '已封禁', ERROR: '检测失败', NO_TOKEN: '无令牌' }[st] || '未知';
       const subURL = cred.subToken ? `https://portal.withorb.com/view?token=${cred.subToken}` : '';
       const used = (cred.lastIncluded && cred.lastBalance != null) ? Math.max(0, Number(cred.lastIncluded) - Number(cred.lastBalance)) : null;
       const pct = (cred.lastIncluded && cred.lastBalance != null) ? Math.min(100, Math.max(0, Math.round((Number(cred.lastBalance) / Number(cred.lastIncluded)) * 100))) : null;
@@ -204,7 +230,7 @@
     list(creds, statuses = {}) {
       const total = creds.length;
       const active = creds.filter(c => (statuses[c.id] || c.status) === 'ACTIVE').length;
-      const abnormal = creds.filter(c => ['EXPIRED', 'NO_BALANCE', 'ERROR'].includes(statuses[c.id] || c.status)).length;
+      const abnormal = creds.filter(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(statuses[c.id] || c.status)).length;
       const noToken = creds.filter(c => (statuses[c.id] || c.status) === 'NO_TOKEN').length;
 
       const header = `
@@ -217,9 +243,9 @@
           <button class=\"btn btn-ghost\" id=\"copyAll\">一键复制全部</button>
         </div>`;
 
-      const groupBy = (pred) => creds.filter(pred).map(c => this.card(c, statuses[c.id])).join('') || '<div class=\"empty-state\">无</div>';
+      const groupBy = (pred) => creds.filter(pred).map(c => this.card(c, statuses[c.id])).join('') || '<div class="empty-state">无</div>';
       const okHtml = groupBy(c => (statuses[c.id] || c.status) === 'ACTIVE');
-      const badHtml = groupBy(c => ['EXPIRED', 'NO_BALANCE', 'ERROR'].includes(statuses[c.id] || c.status));
+      const badHtml = groupBy(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(statuses[c.id] || c.status));
       const emptyHtml = groupBy(c => (statuses[c.id] || c.status) === 'NO_TOKEN');
 
       const body = `
@@ -250,37 +276,38 @@
   // Actions
   const actions = {
     auth: () => oauth.start(),
-    async manage() {
+    async manage(forceCheck = true) {
       const creds = store.get();
       if (!creds.length) return ui.toast('暂无凭证');
-      const toastEl = ui.toast('加载中...', 200000);
       const statuses = {};
-      await Promise.all(creds.map(async c => { statuses[c.id] = await balance.check(c); }));
-      // 读取更新后的凭证（包含 lastBalance/lastEndDate/lastIncluded）
+
+      if (forceCheck) {
+        const toastEl = ui.toast('加载中...', 200000);
+        await Promise.all(creds.map(async c => { statuses[c.id] = await balance.check(c); }));
+        toastEl?.remove?.();
+      }
+
       const updatedCreds = store.get();
-      toastEl?.remove?.();
+      if (!forceCheck) {
+        updatedCreds.forEach(c => { statuses[c.id] = c.status; });
+      }
       ui.list(updatedCreds, statuses);
     },
     async check(id) {
       const cred = store.get().find(x => x.id === id);
       if (!cred) return;
       const toastEl = ui.toast('检测中...', 10000);
-      const status = await balance.check(cred);
-      store.update(id, { status });
+      await balance.check(cred);
       toastEl?.remove?.();
-      actions.manage();
+      actions.manage(false);
     },
     async batch() {
       const creds = store.get();
       const toastEl = ui.toast('批量检测中...', 200000);
 
-      await Promise.allSettled(creds.map(async c => {
-        const status = await balance.check(c);
-        store.update(c.id, { status });
-        return status;
-      }));
+      await Promise.allSettled(creds.map(c => balance.check(c)));
       toastEl?.remove?.();
-      actions.manage()
+      actions.manage(false);
     }
   };
 
@@ -304,6 +331,8 @@
       // 禁用编辑但保留提交值（使用 readOnly 而非 disabled）
       input.readOnly = true;
       input.setAttribute('aria-readonly', 'true');
+      // 人机验证后自动提交
+      // document.querySelector('button[data-action-button-primary]').click();
     },
 
     async terms() {
