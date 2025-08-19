@@ -108,7 +108,7 @@
           for (let i = 0; i < pending.length; i++) {
             const item = pending[i];
             if (!item) continue;
-            const node = this.query(false, item.selector, checkParent ? parent : document, checkParent);
+            const node = this.query(false, item.selector, checkParent ? parent : this[_doc], checkParent);
             if (node) {
               results[item.index] = node;
               pending[i] = null;

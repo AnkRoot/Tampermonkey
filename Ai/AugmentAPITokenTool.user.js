@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.Ai Augment Tool
 // @description  Augment 全自动自动注册 + 凭证管理工具   -- TODO: 1.自动邮箱；2.自动人机验证
-// @version      2.0.1
+// @version      2.1.0
 // @author       ank
 // @namespace    http://010314.xyz/
 // @match        https://augmentcode.com/*
@@ -15,6 +15,7 @@
 // @connect      portal.withorb.com
 // @connect      augmentcode.com
 // @run-at       document-end
+// @require      https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.user.js
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Ai/AugmentAPITokenTool.user.js
 // ==/UserScript==
 (() => {
@@ -74,7 +75,7 @@
     async token(tenant, code) {
       const { verifier } = json(GM_getValue('oauth', '{}')) || {};
       if (!verifier) throw '认证状态丢失';
-      const url = tenant.endsWith('/') ? `${tenant}token` : `${tenant}/token`;
+      const url = `${tenant.replace(/\/$/, '')}/token`;
       const res = await http(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, data: { grant_type: 'authorization_code', client_id: CFG.clientID, code_verifier: verifier, redirect_uri: '', code } });
       return res.access_token || (() => { throw '获取令牌失败' })();
     }
@@ -83,10 +84,9 @@
   // Balance API
   const balance = {
     async getBanStatus(tenant, token) {
-      if (!tenant || !token) return 'ERROR';
-      const url = tenant.endsWith('/') ? `${tenant}api/v1/me` : `${tenant}/api/v1/me`;
       try {
-        await http(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!tenant || !token) return 'ERROR';
+        await http(`${tenant.replace(/\/$/, '')}/api/v1/me`, { headers: { 'Authorization': `Bearer ${token}` } });
         return 'OK';
       } catch (status) {
         if (status === 404) return 'OK';
@@ -101,36 +101,39 @@
       const customer = subItem?.customer;
       if (!customer) throw '订阅信息错误';
       const bal = await http(`${CFG.orbAPI}/customers/${customer.id}/ledger_summary?pricing_unit_id=${CFG.pricingUnit}&token=${token}`);
-      let included;
-      try {
-        const pi = (subItem.price_intervals || []).find(x => x.allocation && x.allocation.pricing_unit?.id === CFG.pricingUnit);
-        included = pi?.allocation?.amount;
-      } catch { }
+      const included = subItem?.price_intervals?.find(x => x.allocation?.pricing_unit?.id === CFG.pricingUnit)?.allocation?.amount;
       return { email: customer.email, balance: bal.credits_balance, endDate: subItem.end_date, included };
     },
     async check(cred) {
+      const statuses = new Set();
+      let lastBalance, lastEndDate, lastIncluded;
+
+      if (cred.subToken) {
+        try {
+          ({ balance: lastBalance, endDate: lastEndDate, included: lastIncluded } = await this.info(cred.subToken));
+          if (lastEndDate && Date.now() > new Date(lastEndDate)) statuses.add('EXPIRED');
+          if (lastBalance <= 0) statuses.add('NO_BALANCE');
+        } catch { statuses.add('ERROR'); }
+      } else {
+        statuses.add('NO_TOKEN');
+      }
+
       if (cred.token && cred.tenant) {
         const directStatus = await this.getBanStatus(cred.tenant, cred.token);
-        if (directStatus === 'BANNED' || directStatus === 'EXPIRED') {
-          store.update(cred.id, { status: directStatus, lastBalance: null, lastEndDate: null, lastIncluded: null });
-          return directStatus;
+        if (['BANNED', 'EXPIRED', 'ERROR'].includes(directStatus) && !statuses.has(directStatus)) {
+          statuses.add(directStatus);
         }
       }
 
-      if (!cred.subToken) {
-        store.update(cred.id, { status: 'NO_TOKEN' });
-        return 'NO_TOKEN';
+      const statusPriority = ['EXPIRED', 'BANNED', 'NO_BALANCE', 'ERROR', 'NO_TOKEN'];
+      let primaryStatus = 'ACTIVE';
+      if (statuses.size > 0) {
+        primaryStatus = statusPriority.find(s => statuses.has(s)) || 'UNKNOWN';
       }
-      try {
-        const info = await this.info(cred.subToken);
-        const expired = info.endDate && Date.now() > new Date(info.endDate);
-        const status = expired ? 'EXPIRED' : info.balance <= 0 ? 'NO_BALANCE' : 'ACTIVE';
-        store.update(cred.id, { status, lastBalance: info.balance, lastEndDate: info.endDate, lastIncluded: info.included });
-        return status;
-      } catch {
-        store.update(cred.id, { status: 'ERROR' });
-        return 'ERROR';
-      }
+
+      const statusList = statuses.size > 0 ? Array.from(statuses) : ['ACTIVE'];
+      store.update(cred.id, { status: primaryStatus, statusList, lastBalance, lastEndDate, lastIncluded });
+      return primaryStatus;
     }
   };
 
@@ -157,6 +160,7 @@
     .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
     .card-title{font-weight:600;font-size:15px;color:#0f172a;margin:0;cursor:pointer}
     .card-title:hover{color:#3b82f6}
+    .status-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
     .status{padding:3px 8px;border-radius:12px;font-size:11px;font-weight:500;text-transform:uppercase}
     .ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}.warn{background:#fef3c7;color:#92400e}.muted{background:#f1f5f9;color:#64748b}
     .info-row{display:flex;align-items:center;gap:12px;margin-bottom:8px;font-size:13px;color:#6b7280}
@@ -195,43 +199,57 @@
       return el;
     },
     toast(msg, ms = 2000) { const el = this.show(`<div style=\"text-align:center;padding:20px\">${msg}</div>`); setTimeout(() => el.remove(), ms); return el; },
-    card(cred, status) {
-      const st = status || cred.status || 'UNKNOWN';
-      const badge = { ACTIVE: 'ok', EXPIRED: 'bad', NO_BALANCE: 'bad', BANNED: 'bad', ERROR: 'warn', NO_TOKEN: 'muted' }[st] || 'muted';
-      const stateClass = { ACTIVE: 'st-ok', EXPIRED: 'st-bad', NO_BALANCE: 'st-bad', BANNED: 'st-bad', ERROR: 'st-warn', NO_TOKEN: 'st-muted', UNKNOWN: 'st-muted' }[st] || 'st-muted';
-      const text = { ACTIVE: '正常', EXPIRED: '已过期', NO_BALANCE: '余额不足', BANNED: '已封禁', ERROR: '检测失败', NO_TOKEN: '无令牌' }[st] || '未知';
+    card(cred) {
+      const st = cred.status || 'UNKNOWN';
+      const statusList = cred.statusList || [st];
+      const statusMap = {
+        ACTIVE: { badge: 'ok', stateClass: 'st-ok', text: '正常' },
+        EXPIRED: { badge: 'bad', stateClass: 'st-bad', text: '已过期' },
+        NO_BALANCE: { badge: 'bad', stateClass: 'st-bad', text: '余额不足' },
+        BANNED: { badge: 'bad', stateClass: 'st-bad', text: '已封禁' },
+        ERROR: { badge: 'warn', stateClass: 'st-warn', text: '检测失败' },
+        NO_TOKEN: { badge: 'muted', stateClass: 'st-muted', text: '无令牌' },
+        UNKNOWN: { badge: 'muted', stateClass: 'st-muted', text: '未知' }
+      };
+
+      const { stateClass } = statusMap[st] || statusMap.UNKNOWN;
+      const badgesHtml = statusList.map(s => {
+        const { badge, text } = statusMap[s] || statusMap.UNKNOWN;
+        return `<span class="status ${badge}">${text}</span>`;
+      }).join('');
+
       const subURL = cred.subToken ? `https://portal.withorb.com/view?token=${cred.subToken}` : '';
-      const used = (cred.lastIncluded && cred.lastBalance != null) ? Math.max(0, Number(cred.lastIncluded) - Number(cred.lastBalance)) : null;
-      const pct = (cred.lastIncluded && cred.lastBalance != null) ? Math.min(100, Math.max(0, Math.round((Number(cred.lastBalance) / Number(cred.lastIncluded)) * 100))) : null;
+      const used = (cred.lastIncluded && cred.lastBalance != null) ? Math.max(0, Number(cred.lastIncluded) - Number(cred.lastBalance)) : undefined;
+      const pct = (cred.lastIncluded && cred.lastBalance != null) ? Math.min(100, Math.max(0, Math.round((Number(cred.lastBalance) / Number(cred.lastIncluded)) * 100))) : undefined;
 
-      const metrics = (cred.lastBalance || cred.lastEndDate || cred.lastIncluded) ?
-        `<div class=\"info-row\">
-          <div class=\"info-item\" title=\"复制余额\" data-copy="${cred.lastBalance ?? ''}">💬 <span class=\"info-value\">${cred.lastBalance ?? '?'}</span>${cred.lastIncluded ? ` / ${cred.lastIncluded}` : ''}${used != null ? ` · 已用: ${used}` : ''}</div>
-          ${cred.lastEndDate ? `<div class=\"info-item\" title=\"复制到期时间\" data-copy=\"${fmtDate(cred.lastEndDate)} UTC\">⏳ <span class=\"info-value\">${fmtDate(cred.lastEndDate)} UTC</span></div>` : ''}
+      const metrics = (cred.lastBalance != null || cred.lastEndDate || cred.lastIncluded != null) ?
+        `<div class="info-row">
+          <div class="info-item" title="复制余额" data-copy="${cred.lastBalance ?? ''}">💬 <span class="info-value">${cred.lastBalance ?? '?'}</span>${cred.lastIncluded ? ` / ${cred.lastIncluded}` : ''}${used != null ? ` · 已用: ${used}` : ''}</div>
+          ${cred.lastEndDate ? `<div class="info-item" title="复制到期时间" data-copy="${fmtDate(cred.lastEndDate)} UTC">⏳ <span class="info-value">${fmtDate(cred.lastEndDate)} UTC</span></div>` : ''}
         </div>
-        ${pct != null ? `<div class=\"progress\"><div class=\"progress-bar\" style=\"width:${pct}%\"></div></div>` : ''}` : '';
+        ${pct != null ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>` : ''}` : '';
 
-      return `<div class=\"card ${stateClass}\">
-        <div class=\"card-header\">
-          <h4 class=\"card-title\" title=\"点击复制该凭证\" data-copy-cred=\"${cred.id}\">${cred.email || `ID: ${cred.id}`}</h4>
-          <span class=\"status ${badge}\">${text}</span>
+      return `<div class="card ${stateClass}">
+        <div class="card-header">
+          <h4 class="card-title" title="点击复制该凭证" data-copy-cred="${cred.id}">${cred.email || `ID: ${cred.id}`}</h4>
+          <div class="status-badges">${badgesHtml}</div>
         </div>
         ${metrics}
-        <div class=\"clickable\" data-copy=\"${cred.tenant}\" title=\"点击复制租户URL\">🔗 ${cred.tenant}</div>
-        <div class=\"clickable\" data-copy=\"${cred.token}\" title=\"点击复制访问令牌\">🔑 ${cred.token}</div>
-        ${subURL ? `<div class=\"clickable\" data-copy=\"${subURL}\" title=\"点击复制订阅URL\">📊 ${subURL}</div>` : ''}
-        <div class=\"actions\">
-          <button class=\"btn btn-secondary\" data-check=\"${cred.id}\">检测</button>
-          ${subURL ? `<a class=\"btn btn-secondary\" href=\"${subURL}\" target=\"_blank\">订阅</a>` : ''}
-          <button class=\"btn btn-danger\" data-del=\"${cred.id}\">删除</button>
+        <div class="clickable" data-copy="${cred.tenant}" title="点击复制租户URL">🔗 ${cred.tenant}</div>
+        <div class="clickable" data-copy="${cred.token}" title="点击复制访问令牌">🔑 ${cred.token}</div>
+        ${subURL ? `<div class="clickable" data-copy="${subURL}" title="点击复制订阅URL">📊 ${subURL}</div>` : ''}
+        <div class="actions">
+          <button class="btn btn-secondary" data-check="${cred.id}">检测</button>
+          ${subURL ? `<a class="btn btn-secondary" href="${subURL}" target="_blank">订阅</a>` : ''}
+          <button class="btn btn-danger" data-del="${cred.id}">删除</button>
         </div>
       </div>`;
     },
-    list(creds, statuses = {}) {
+    list(creds) {
       const total = creds.length;
-      const active = creds.filter(c => (statuses[c.id] || c.status) === 'ACTIVE').length;
-      const abnormal = creds.filter(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(statuses[c.id] || c.status)).length;
-      const noToken = creds.filter(c => (statuses[c.id] || c.status) === 'NO_TOKEN').length;
+      const active = creds.filter(c => (c.status) === 'ACTIVE').length;
+      const abnormal = creds.filter(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(c.status)).length;
+      const noToken = creds.filter(c => (c.status) === 'NO_TOKEN').length;
 
       const header = `
         <div class=\"header-stats\">
@@ -243,10 +261,10 @@
           <button class=\"btn btn-ghost\" id=\"copyAll\">一键复制全部</button>
         </div>`;
 
-      const groupBy = (pred) => creds.filter(pred).map(c => this.card(c, statuses[c.id])).join('') || '<div class="empty-state">无</div>';
-      const okHtml = groupBy(c => (statuses[c.id] || c.status) === 'ACTIVE');
-      const badHtml = groupBy(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(statuses[c.id] || c.status));
-      const emptyHtml = groupBy(c => (statuses[c.id] || c.status) === 'NO_TOKEN');
+      const groupBy = (pred) => creds.filter(pred).map(c => this.card(c)).join('') || '<div class="empty-state">无</div>';
+      const okHtml = groupBy(c => (c.status) === 'ACTIVE');
+      const badHtml = groupBy(c => ['EXPIRED', 'NO_BALANCE', 'ERROR', 'BANNED'].includes(c.status));
+      const emptyHtml = groupBy(c => (c.status) === 'NO_TOKEN');
 
       const body = `
         <div class=\"group\"><div class=\"group-title\">✅ 正常 <span class=\"group-count\">${active}</span></div>${okHtml}</div>
@@ -277,21 +295,16 @@
   const actions = {
     auth: () => oauth.start(),
     async manage(forceCheck = true) {
-      const creds = store.get();
+      let creds = store.get();
       if (!creds.length) return ui.toast('暂无凭证');
-      const statuses = {};
 
       if (forceCheck) {
         const toastEl = ui.toast('加载中...', 200000);
-        await Promise.all(creds.map(async c => { statuses[c.id] = await balance.check(c); }));
+        await Promise.all(creds.map(c => balance.check(c)));
         toastEl?.remove?.();
+        creds = store.get(); // 重新获取，因为 balance.check 更新了 store
       }
-
-      const updatedCreds = store.get();
-      if (!forceCheck) {
-        updatedCreds.forEach(c => { statuses[c.id] = c.status; });
-      }
-      ui.list(updatedCreds, statuses);
+      ui.list(creds);
     },
     async check(id) {
       const cred = store.get().find(x => x.id === id);
@@ -316,15 +329,8 @@
     async loginIdentifier() {
       const { email } = json(GM_getValue('oauth', '{}')) || {};
       if (!email) return; // 未预设邮箱则不处理
-      // 等待 #username 出现
-      let input;
-      for (let i = 0; i < 40; i++) {
-        input = document.querySelector('#username');
-        if (input) break;
-        await sleep(500);
-      }
+      const input = (await elmGetter.get('#username', 60000))[0];
       if (!input) return;
-      // 赋值并触发事件
       input.value = email;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -336,7 +342,7 @@
     },
 
     async terms() {
-      const { email } = json(GM_getValue('oauth', '{}')) || {};
+      const { email, verifier, challenge, state } = json(GM_getValue('oauth', '{}')) || {};
       if (!email) return ui.toast('未找到预设邮箱');
 
       let code, tenant;
@@ -353,7 +359,7 @@
       ui.toast('获取令牌中...');
       try {
         const token = await oauth.token(tenant, code);
-        store.add({ tenant, token, email });
+        store.add({ tenant, token, email, verifier, challenge, state });
         GM_setValue('oauth', '');
         ui.toast('成功！跳转补充信息...');
         setTimeout(() => location.href = 'https://app.augmentcode.com/account/subscription', 1000);
@@ -363,34 +369,37 @@
     },
 
     async subscription() {
-      ui.toast('获取用户信息...');
-
-      let loginiEmail, subToken;
-      for (let i = 0; i < 10; i++) {
-        loginiEmail = $('.base-header-email')?.textContent?.trim();
-        const link = $('a.rt-Text.rt-Link.rt-underline-auto[target="_blank"]');
-        if (link?.href) {
-          try { subToken = new URL(link.href).searchParams.get('token'); } catch { }
+      const logoutAndNotify = async (message, duration = 4000) => {
+        ui.toast(message, duration);
+        await sleep(1000);
+        const logoutButton = $('button[data-testid="logout-button"]');
+        if (logoutButton) {
+          logoutButton.click();
+        } else {
+          ui.toast('未找到登出按钮。');
         }
-        if (loginiEmail && subToken) break;
-        await sleep(500);
-      }
-      if (!loginiEmail && !subToken) return ui.toast('未获取到登录邮箱或订阅令牌');
+      };
 
-      const creds = store.get();
+      ui.toast('检查订阅页面...');
 
-      // 查找邮箱匹配的凭证（优先已有subToken的，再找待配对的）
-      const matching = creds.find(c => c.email === loginiEmail);
-      if (matching && !matching.subToken) {
-        store.update(matching.id, { subToken });
-        return ui.toast(`✅ 凭证已完成: ${loginiEmail}`);
+      const [emailEl, linkEl] = await elmGetter.get(['.base-header-email', 'a.rt-Text.rt-Link.rt-underline-auto[target="_blank"]'], 60000);
+      const loginiEmail = emailEl[0]?.textContent?.trim();
+      let subToken;
+      if (linkEl?.href) {
+        try { subToken = new URL(linkEl.href).searchParams.get('token'); } catch { }
       }
 
-      const pending = creds.filter(c => c.email && !c.subToken).sort((a, b) => b.id - a.id)[0];
-      if (pending) return ui.toast(`❌ 邮箱不匹配: 预期 ${pending.email}, 实际登入 ${loginiEmail}，请登入 ${pending.email} 获取令牌`);
+      const pending = store.get().filter(c => c.email && !c.subToken).sort((a, b) => b.id - a.id)[0];
 
-      ui.toast('⚠️ 未找到待配对的凭证，请先获取令牌');
-      // actions.auth();
+      if (!pending) return logoutAndNotify('未发现待处理任务，为安全起见将自动登出。', 3000);
+      if (!loginiEmail || !subToken) return logoutAndNotify('无法获取页面信息，将自动登出以重试。');
+      if (pending.email !== loginiEmail) logoutAndNotify(`邮箱不匹配 (需要 ${pending.email}, 当前为 ${loginiEmail})。将自动登出...`);
+
+      // Success case
+      store.update(pending.id, { subToken });
+      ui.toast(`✅ 凭证已配对: ${loginiEmail}`, 3000);
+      await sleep(1500);
+      logoutAndNotify('操作成功，自动登出。', 2000);
     }
   };
 
@@ -403,4 +412,3 @@
   if (location.href.includes('app.augmentcode.com/account/subscription')) setTimeout(pages.subscription, 1000);
 
 })();
-
