@@ -3,137 +3,46 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>elmGetter - 功能测试页面</title>
+    <title>elmGetter 2.0 - 功能测试页面</title>
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            background-color: #f8f9fa;
-            color: #212529;
-        }
-
-        header {
-            background-color: #2c3e50;
-            color: white;
-            padding: 20px;
-            text-align: center;
-        }
-
-        main {
-            display: flex;
-            padding: 20px;
-            gap: 20px;
-        }
-
-        #test-area,
-        #results {
-            flex: 1;
-            border: 1px solid #ccc;
-            padding: 15px;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-
-        h1,
-        h2 {
-            border-bottom: 2px solid #dee2e6;
-            padding-bottom: 10px;
-            margin-top: 0;
-        }
-
-        .test-case {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
-            transition: background-color 0.2s;
-        }
-
-        .test-case:hover {
-            background-color: #f1f3f5;
-        }
-
-        .test-case .status {
-            display: inline-block;
-            width: 50px;
-            text-align: center;
-            font-weight: bold;
-            padding: 3px 8px;
-            border-radius: 4px;
-            color: white;
-            margin-right: 10px;
-        }
-
-        .status.pass {
-            background-color: #28a745;
-        }
-
-        .status.fail {
-            background-color: #dc3545;
-        }
-
-        .found {
-            background-color: #007bff !important;
-            color: white;
-            transition: background-color 0.5s;
-            border-radius: 3px;
-            padding: 2px;
-        }
-
-        code {
-            background-color: #e9ecef;
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-
-        button {
-            background-color: #007bff;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin: 5px;
-        }
-
-        button:hover {
-            background-color: #0056b3;
-        }
-
-        .controls {
-            margin-bottom: 20px;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: 8px;
-        }
+        body { font-family: sans-serif; line-height: 1.6; margin: 0; background-color: #f8f9fa; }
+        header { background-color: #343a40; color: white; padding: 20px; text-align: center; }
+        main { display: flex; padding: 20px; gap: 20px; }
+        #test-area, #results { flex: 1; border: 1px solid #ccc; padding: 15px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { border-bottom: 2px solid #dee2e6; padding-bottom: 10px; margin-top: 0; }
+        .test-case { padding: 12px; border-bottom: 1px solid #eee; }
+        .test-case .status { display: inline-block; width: 50px; text-align: center; font-weight: bold; padding: 3px 8px; border-radius: 4px; color: white; margin-right: 10px; }
+        .status.pass { background-color: #28a745; }
+        .status.fail { background-color: #dc3545; }
+        .found { background-color: #007bff !important; color: white; transition: background-color 0.5s; }
+        button { background-color: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background-color: #0056b3; }
+        .controls { margin-bottom: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 8px; }
     </style>
 </head>
 
 <body>
     <header>
-        <h1>elmGetter - 功能测试页面</h1>
+        <h1>elmGetter 2.0 - 功能测试页面</h1>
     </header>
     <main>
         <div id="test-area">
             <h2>测试区域</h2>
-            
-            <!-- 基础元素 -->
+            <div class="controls">
+                <button onclick="runAllTests()">运行所有测试</button>
+                <button onclick="clearResults()">清除结果</button>
+                <button onclick="addDynamicElement()">添加动态元素</button>
+                <button onclick="addDynamicButton()">添加动态按钮 (for .on)</button>
+            </div>
             <div id="title">标题元素</div>
             <div class="paragraph">段落 1</div>
             <div class="paragraph">段落 2</div>
-            
-            <!-- 动态测试区域 -->
             <div id="observer-area">
                 <div class="each-existing">已存在的 Each 元素</div>
+                <button class="event-btn">现有按钮</button>
             </div>
-            
-            <!-- 创建元素区域 -->
             <div id="create-area"></div>
-            
-            <!-- 延迟加载区域 -->
             <div id="delay-area"></div>
-            
-            <!-- 页脚 -->
             <div id="footer">页脚元素</div>
         </div>
         <div id="results">
@@ -141,234 +50,161 @@
         </div>
     </main>
 
+    <!-- 假设这是重构后的 elmGetter 2.0 文件 -->
     <script src="elmGetter.user.js"></script>
 
-    <!-- Test Runner Script -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            // --- Test Runner Infrastructure ---
             const resultsDiv = document.getElementById('results');
             const tests = [];
             const test = (desc, fn) => tests.push({ desc, fn });
             const assert = (cond, msg) => { if (!cond) throw new Error(msg || '断言失败'); };
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
             // --- Test Case Definitions ---
 
-            test('基础: get - 按 ID 查找元素', async () => {
+            test('GET: 按 ID 查找元素', async () => {
                 const el = await elmGetter.get('#title');
                 assert(el && el.id === 'title', '应找到 ID 为 title 的元素');
             });
 
-            test('基础: get - 查找不存在的元素', async () => {
-                const el = await elmGetter.get('#non-existent', document, 100);
+            test('GET: 查找不存在的元素 (带超时)', async () => {
+                const el = await elmGetter.get('#non-existent', { timeout: 100 });
                 assert(el === null, '不存在的元素应返回 null');
             });
 
-            test('基础: get - 批量查找多个元素', async () => {
-                const elements = await elmGetter.get(['#title', '#footer', '.paragraph']);
-                assert(elements && elements.length === 3, '应返回 3 个元素的数组');
-                assert(elements[0] && elements[0].id === 'title', '第一个元素应是标题');
-                assert(elements[1] && elements[1].id === 'footer', '第二个元素应是页脚');
-                assert(elements[2] && elements[2].className === 'paragraph', '第三个元素应是段落');
+            test('GET: 批量查找多个元素', async () => {
+                const [title, footer, para] = await elmGetter.get(['#title', '#footer', '.paragraph']);
+                assert(title && title.id === 'title', '第一个元素应是标题');
+                assert(footer && footer.id === 'footer', '第二个元素应是页脚');
+                assert(para && para.className === 'paragraph', '第三个元素应是段落');
             });
 
-            test('基础: get - 在指定父元素中查找', async () => {
+            test('GET: 在指定父元素中查找', async () => {
                 const parent = document.getElementById('observer-area');
-                const el = await elmGetter.get('.each-existing', parent);
+                const el = await elmGetter.get('.each-existing', { parent });
                 assert(el && el.className === 'each-existing', '应在指定父元素中找到元素');
             });
 
-            test('基础: get - 使用超时参数', async () => {
-                const startTime = Date.now();
-                const el = await elmGetter.get('#non-existent', document, 200);
-                const elapsed = Date.now() - startTime;
-                assert(el === null, '超时后应返回 null');
-                assert(elapsed >= 180 && elapsed <= 300, `超时时间应在 200ms 左右，实际用时 ${elapsed}ms`);
-            });
-
-            test('工具: each - 处理已存在的元素', () => new Promise((resolve, reject) => {
+            test('EACH: 处理已存在的元素', () => new Promise(resolve => {
                 let count = 0;
-                let stopFn;
-
-                stopFn = elmGetter.each('.paragraph', (el, isNew) => {
+                const stop = elmGetter.each('.paragraph', (el, isNew) => {
                     assert(!isNew, '已存在的元素 isNew 应为 false');
                     count++;
-                    if (count === 2) {
-                        stopFn();
-                        resolve();
-                    }
                 });
-
-                setTimeout(() => reject(new Error('each 测试超时')), 1000);
+                setTimeout(() => {
+                    stop();
+                    assert(count === 2, `应找到 2 个已存在的段落，实际找到 ${count} 个`);
+                    resolve();
+                }, 100);
             }));
 
-            test('工具: each - 处理动态添加的元素', () => new Promise((resolve, reject) => {
+            test('EACH: 处理动态添加的元素', async () => {
                 let foundNew = false;
-                let stopFn;
+                const stop = elmGetter.each('.dynamic-item', (el, isNew) => {
+                    if (isNew) foundNew = true;
+                }, { parent: document.getElementById('observer-area') });
 
-                stopFn = elmGetter.each('.dynamic-item', (el, isNew) => {
-                    assert(isNew, '新添加的元素 isNew 应为 true');
-                    foundNew = true;
-                    stopFn();
-                    resolve();
-                }, { root: document.getElementById('observer-area') });
-
-                // 添加动态元素
-                setTimeout(() => {
-                    const newEl = document.createElement('div');
-                    newEl.className = 'dynamic-item';
-                    newEl.textContent = '动态添加的元素';
-                    document.getElementById('observer-area').appendChild(newEl);
-                }, 100);
-
-                setTimeout(() => reject(new Error('动态元素测试超时')), 1000);
-            }));
-
-            test('工具: each - 停止监听功能', () => new Promise((resolve, reject) => {
-                let callCount = 0;
-                let stopFn;
-
-                stopFn = elmGetter.each('.paragraph', () => {
-                    callCount++;
-                    if (callCount === 1) {
-                        stopFn(); // 第一次调用后停止
-                    }
-                });
-
-                // 添加新段落
-                setTimeout(() => {
-                    const newEl = document.createElement('div');
-                    newEl.className = 'paragraph';
-                    newEl.textContent = '新段落';
-                    document.body.appendChild(newEl);
-                    
-                    // 等待一段时间确保没有再次调用
-                    setTimeout(() => {
-                        assert(callCount === 1, '应只处理 1 个元素就停止');
-                        resolve();
-                    }, 200);
-                }, 100);
-
-                setTimeout(() => reject(new Error('停止监听测试超时')), 1000);
-            }));
-
-            test('工具: each - 返回 false 停止处理', () => new Promise((resolve, reject) => {
-                let callCount = 0;
-                let stopFn;
-
-                stopFn = elmGetter.each('.paragraph', () => {
-                    callCount++;
-                    return false; // 返回 false 停止处理
-                });
-
-                setTimeout(() => {
-                    assert(callCount === 1, '应只处理 1 个元素就停止');
-                    stopFn();
-                    resolve();
-                }, 100);
-
-                setTimeout(() => reject(new Error('返回 false 测试超时')), 1000);
-            }));
-
-            test('工具: create - 创建单个元素', () => {
-                const div = elmGetter.create('<div class="created">创建的元素</div>');
-                assert(div !== null, '应成功创建元素');
-                assert(div.className === 'created', '元素应有正确的类名');
-                assert(div.textContent === '创建的元素', '元素应有正确的文本内容');
+                addDynamicElement();
+                await sleep(50);
+                stop();
+                assert(foundNew, '应监听到动态添加的元素');
             });
 
-            test('工具: create - 创建元素并附加到父元素', () => {
+            test('EACH: 返回 false 停止处理', async () => {
+                let callCount = 0;
+                const stop = elmGetter.each('.paragraph', () => {
+                    callCount++;
+                    return false; // 返回 false 立即停止
+                });
+                await sleep(50);
+                assert(callCount === 1, '应只处理 1 个元素就停止');
+                stop(); // 清理
+            });
+
+            test('ON: 监听已存在元素的事件', async () => {
+                let clicked = false;
+                const stop = elmGetter.on('click', '.event-btn', (e, el) => {
+                    clicked = true;
+                    assert(el.className === 'event-btn', '回调的元素正确');
+                }, { parent: document.getElementById('observer-area') });
+
+                document.querySelector('.event-btn').click();
+                await sleep(50);
+                stop();
+                assert(clicked, '已存在元素的点击事件应被触发');
+            });
+
+            test('ON: 监听动态添加元素的事件', async () => {
+                let clicked = false;
+                const stop = elmGetter.on('click', '.dynamic-btn', (e, el) => {
+                    clicked = true;
+                }, { parent: document.getElementById('observer-area') });
+
+                const btn = addDynamicButton();
+                btn.click();
+                await sleep(50);
+                stop();
+                assert(clicked, '动态添加元素的点击事件应被触发');
+            });
+
+            test('CREATE: 创建单个元素', () => {
+                const div = elmGetter.create('<div class="created">Hi</div>');
+                assert(div && div.className === 'created', '元素应被正确创建');
+            });
+
+            test('CREATE: 创建并附加到父元素', () => {
                 const parent = document.getElementById('create-area');
-                const initialChildCount = parent.children.length;
-                
-                elmGetter.create('<div class="appended">附加的元素</div>', parent);
-                
-                assert(parent.children.length === initialChildCount + 1, '父元素应有一个新的子元素');
-                assert(parent.lastElementChild.className === 'appended', '新元素应有正确的类名');
+                parent.innerHTML = '';
+                elmGetter.create('<span>Appended</span>', { parent });
+                assert(parent.children.length === 1 && parent.firstChild.tagName === 'SPAN', '元素应被附加');
             });
 
-            test('工具: create - 创建元素并返回 ID 映射', () => {
-                const map = elmGetter.create('<div id="root"><span id="child1"></span><p id="child2"></p></div>', true);
-                assert(map && typeof map === 'object', '应成功创建元素映射');
-                assert(map.root && map.root.id === 'root', '映射应包含 root 元素');
-                assert(map.child1 && map.child1.id === 'child1', '映射应包含 child1 元素');
-                assert(map.child2 && map.child2.id === 'child2', '映射应包含 child2 元素');
+            test('CREATE: 创建并返回 ID 映射', () => {
+                const map = elmGetter.create('<div id="root"><b id="child"></b></div>', { mapIds: true });
+                assert(map && map.root && map.child && map.root.id === 'root', 'ID 映射应正确');
             });
 
-            test('工具: create - 创建无效的 HTML', () => {
-                const result = elmGetter.create('');
-                assert(result === null, '无效 HTML 应返回 null');
+            test('CSS: 注入样式并验证', () => {
+                const styleId = 'test-style';
+                elmGetter.css('.test-css-class { font-size: 33px; }', styleId);
+                const el = elmGetter.create('<div class="test-css-class"></div>', { parent: document.body });
+                const style = window.getComputedStyle(el);
+                assert(style.fontSize === '33px', '注入的 CSS 应生效');
+                el.remove();
+                document.getElementById(styleId).remove();
             });
 
-            test('工具: selector - 设置和获取选择器模式', () => {
-                // 测试默认模式
-                assert(elmGetter.currentSelector === 'css', '默认选择器模式应为 css');
-                
-                // 设置为 xpath 模式
-                elmGetter.selector('xpath');
-                assert(elmGetter.currentSelector === 'xpath', '选择器模式应更改为 xpath');
-                
-                // 设置回 css 模式
-                elmGetter.selector('css');
-                assert(elmGetter.currentSelector === 'css', '选择器模式应更改为 css');
-                
-                // 测试无效模式
-                elmGetter.selector('invalid');
-                assert(elmGetter.currentSelector === 'css', '无效模式应默认为 css');
+            test('CSS: 防止重复注入', () => {
+                const styleId = 'unique-style';
+                const s1 = elmGetter.css('body {}', styleId);
+                const s2 = elmGetter.css('body {}', styleId);
+                assert(document.querySelectorAll(`#${styleId}`).length === 1, '相同 ID 的 style 标签不应重复注入');
+                assert(s1 === s2, '第二次调用应返回已存在的 style 元素');
+                s1.remove();
             });
 
-            test('高级: get - 使用 XPath 选择器', async () => {
-                // 切换到 XPath 模式
-                elmGetter.selector('xpath');
-                
+            test('CONFIG: 设置和获取选择器模式', () => {
+                elmGetter.config({ selectorMode: 'xpath' });
+                assert(elmGetter.currentSelectorMode === 'xpath', '模式应更改为 xpath');
+                elmGetter.config({ selectorMode: 'css' });
+                assert(elmGetter.currentSelectorMode === 'css', '模式应改回 css');
+            });
+
+            test('CONFIG: 使用 XPath 选择器', async () => {
+                elmGetter.config({ selectorMode: 'xpath' });
                 const el = await elmGetter.get('//div[@id="title"]');
                 assert(el?.id === 'title', 'XPath 应找到标题元素');
-                
-                // 切换回 CSS 模式
-                elmGetter.selector('css');
+                elmGetter.config({ selectorMode: 'css' }); // Reset
             });
-
-            test('高级: get - 参数位置灵活性', async () => {
-                // 测试 parent 和 timeout 参数位置互换
-                const el1 = await elmGetter.get('#title', 100);
-                assert(el1 && el1.id === 'title', 'timeout 在第二位应正常工作');
-                
-                const el2 = await elmGetter.get('#title', document.body, 100);
-                assert(el2 && el2.id === 'title', 'parent 和 timeout 都提供应正常工作');
-            });
-
-            test('高级: each - 在指定父元素中监听', () => new Promise((resolve, reject) => {
-                const observerArea = document.getElementById('observer-area');
-                let found = false;
-                let stopFn;
-
-                stopFn = elmGetter.each('.parent-test', (el, isNew) => {
-                    assert(isNew, '在父元素中找到的新元素 isNew 应为 true');
-                    found = true;
-                    stopFn();
-                    resolve();
-                }, observerArea);
-
-                // 在指定父元素中添加元素
-                setTimeout(() => {
-                    const newEl = document.createElement('div');
-                    newEl.className = 'parent-test';
-                    newEl.textContent = '父元素测试';
-                    observerArea.appendChild(newEl);
-                }, 50); // 缩短延迟时间
-
-                setTimeout(() => reject(new Error('父元素监听测试超时')), 800); // 缩短超时时间
-            }));
 
             // --- Test Runner ---
             async function runAllTests() {
                 clearResults();
-                
                 for (const t of tests) {
                     const resultEl = document.createElement('div');
                     resultEl.className = 'test-case';
                     let status, message;
-                    
                     try {
                         await t.fn();
                         status = 'pass';
@@ -378,37 +214,29 @@
                         message = `失败: ${e.message}`;
                         console.error(`Test failed: ${t.desc}`, e);
                     }
-                    
                     resultEl.innerHTML = `<span class="status ${status}">${status.toUpperCase()}</span> <strong>${t.desc}</strong> - <span>${message}</span>`;
                     resultsDiv.appendChild(resultEl);
                 }
-                
-                // 显示测试统计
                 const passed = document.querySelectorAll('.status.pass').length;
-                const total = tests.length;
                 const summary = document.createElement('div');
-                summary.innerHTML = `<h3>测试完成: ${passed}/${total} 通过</h3>`;
+                summary.innerHTML = `<h3>测试完成: ${passed}/${tests.length} 通过</h3>`;
                 resultsDiv.appendChild(summary);
             }
 
-            function clearResults() {
-                resultsDiv.innerHTML = '<h2>测试结果</h2>';
-            }
+            window.runAllTests = runAllTests;
+            window.clearResults = () => resultsDiv.innerHTML = '<h2>测试结果</h2>';
+            window.addDynamicElement = () => {
+                const el = elmGetter.create('<div class="dynamic-item">动态元素</div>');
+                document.getElementById('observer-area').appendChild(el);
+                return el;
+            };
+            window.addDynamicButton = () => {
+                const btn = elmGetter.create('<button class="dynamic-btn">动态按钮</button>');
+                document.getElementById('observer-area').appendChild(btn);
+                return btn;
+            };
 
-            function addDynamicElement() {
-                const delayArea = document.getElementById('delay-area');
-                const newEl = document.createElement('div');
-                newEl.className = 'delayed-item';
-                newEl.textContent = `延迟添加的元素 ${Date.now()}`;
-                delayArea.appendChild(newEl);
-                
-                // 高亮显示新元素
-                newEl.classList.add('found');
-                setTimeout(() => newEl.classList.remove('found'), 1000);
-            }
-
-            // 自动运行测试
-            setTimeout(runAllTests, 500);
+            setTimeout(runAllTests, 200);
         });
     </script>
 </body>

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ElmGetter
-// @description  高性能的异步DOM元素获取和操作库
-// @version      1.1.0
+// @name         ElmGetter 2.0
+// @description  新一代高性能异步DOM库，为用户脚本量身打造，提供事件委托和样式注入功能。
+// @version      2.0.1
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0-or-later
@@ -15,146 +15,112 @@
 (function () {
   'use strict';
 
-  // 使用 Symbol 创建私有属性，避免外部访问和命名冲突
-  const _win = Symbol('win');
-  const _doc = Symbol('doc');
-  const _observers = Symbol('observers');
-  const _mode = Symbol('mode');
-  const _matches = Symbol('matches');
-  const _MutationObs = Symbol('MutationObs');
-
   class ElmGetter {
-    constructor() {
-      this[_win] = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-      this[_doc] = this[_win].document;
-      this[_observers] = new Map();
-      this[_mode] = 'css'; // 默认为 'css' 选择器模式
+    // 使用 # 定义私有字段，确保内部状态不被外部篡改
+    #win;
+    #doc;
+    #selectorMode = 'css';
+    #observerManager = new Map(); // 核心优化：共享 MutationObserver 实例
 
-      // 现代化改进：直接使用标准API，不再需要兼容老旧浏览器的前缀
-      this[_matches] = this[_win].Element.prototype.matches;
-      this[_MutationObs] = this[_win].MutationObserver;
+    constructor() {
+      this.#win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      this.#doc = this.#win.document;
     }
 
     /**
-     * 观察目标节点下的 DOM 变动 (新增节点、属性变化)
-     * @param {Node} target - 被观察的 DOM 节点
-     * @param {function(Element): void} callback - 当有元素新增或属性变化时执行的回调
-     * @returns {function(): void} - 调用此函数可停止观察
+     * 内部方法：获取或创建一个针对特定根节点的共享 MutationObserver
+     * @param {Node} rootNode - 观察的根节点
+     * @returns {{addCallback: Function, removeCallback: Function}}
      */
-    observe(target, callback) {
-      const unobserve = () => {
-        const entry = this[_observers].get(target);
-        if (!entry) return;
-        const idx = entry.callbacks.indexOf(callback);
-        if (idx > -1) {
-          entry.callbacks.splice(idx, 1);
-        }
-        // 当没有回调时，断开观察者并清理 Map
-        if (entry.callbacks.length === 0) {
-          entry.observer.disconnect();
-          this[_observers].delete(target);
-        }
-      };
-
-      if (this[_observers].has(target)) {
-        this[_observers].get(target).callbacks.push(callback);
-        return unobserve;
-      }
-
-      const observer = new this[_MutationObs](mutations => {
-        const cbs = this[_observers].get(target)?.callbacks;
-        if (!cbs || cbs.length === 0) return;
-
-        for (const mutation of mutations) {
-          // 处理属性变化，将目标元素传递给回调
-          if (mutation.type === 'attributes') {
-            for (const cb of cbs) cb(mutation.target);
-          }
-          // 处理新增节点，将每个新增的 Element 节点传递给回调
-          for (const node of mutation.addedNodes) {
-            if (node instanceof Element) {
-              for (const cb of cbs) cb(node);
+    #getSharedObserver(rootNode) {
+      if (!this.#observerManager.has(rootNode)) {
+        const callbacks = new Set();
+        const observer = new MutationObserver(mutations => {
+          for (const mutation of mutations) {
+            for (const addedNode of mutation.addedNodes) {
+              if (addedNode.nodeType === Node.ELEMENT_NODE) {
+                // 将新增的元素节点分发给所有注册的回调
+                callbacks.forEach(cb => cb(addedNode));
+              }
             }
           }
-        }
-      });
+        });
 
-      this[_observers].set(target, { observer, callbacks: [callback] });
-      observer.observe(target, { childList: true, subtree: true, attributes: true });
-      return unobserve;
+        observer.observe(rootNode, { childList: true, subtree: true });
+
+        this.#observerManager.set(rootNode, {
+          observer,
+          callbacks,
+          refCount: 0,
+        });
+      }
+
+      const manager = this.#observerManager.get(rootNode);
+      manager.refCount++;
+
+      return {
+        addCallback: (cb) => manager.callbacks.add(cb),
+        removeCallback: (cb) => {
+          manager.callbacks.delete(cb);
+          manager.refCount--;
+          if (manager.refCount === 0) {
+            // 当没有任何任务监听时，自动断开观察者，释放资源
+            manager.observer.disconnect();
+            this.#observerManager.delete(rootNode);
+          }
+        },
+      };
     }
 
     /**
-     * DOM 查询的统一接口，支持 CSS 和 XPath
-     * @param {boolean} all - 是否查询所有匹配的元素
-     * @param {string} selector - 选择器字符串
-     * @param {Node} parent - 查询的起始节点
-     * @param {boolean} includeParent - 结果是否包含 parent 自身（如果匹配）
-     * @returns {Element|Element[]|null} - 查询结果
+     * 同步查询 DOM 元素
+     * @param {string} selector - CSS 或 XPath 选择器
+     * @param {{all?: boolean, parent?: Node, includeParent?: boolean}} [options={}] - 查询选项
+     * @returns {Element|Element[]|null}
      */
-    query(all, selector, parent = this[_doc], includeParent = false) {
-      if (!parent || !selector || typeof selector !== 'string') {
-        return all ? [] : null;
-      }
+    query(selector, { all = false, parent = this.#doc, includeParent = false } = {}) {
+      if (!parent || typeof selector !== 'string') return all ? [] : null;
 
       try {
-        if (this[_mode] === 'css') {
-          const checkParent = includeParent && parent instanceof Element && this[_matches].call(parent, selector);
-          if (all) {
-            const results = Array.from(parent.querySelectorAll(selector));
-            if (checkParent) {
-              results.unshift(parent);
-            }
-            return results;
+        if (this.#selectorMode === 'css') {
+          const results = all ? Array.from(parent.querySelectorAll(selector)) : parent.querySelector(selector);
+          if (all && includeParent && parent instanceof Element && parent.matches(selector)) {
+            results.unshift(parent);
           }
-          return checkParent ? parent : parent.querySelector(selector);
-        }
-
-        if (this[_mode] === 'xpath') {
-          const ownerDoc = parent.ownerDocument || parent;
-          // XPathResult.ORDERED_NODE_SNAPSHOT_TYPE = 7
-          // XPathResult.FIRST_ORDERED_NODE_TYPE = 9
-          const resultType = all ? 7 : 9;
-          const result = ownerDoc.evaluate(selector, parent, null, resultType, null);
+          return results;
+        } else { // xpath
+          const resultType = all ? XPathResult.ORDERED_NODE_SNAPSHOT_TYPE : XPathResult.ANY_UNORDERED_NODE_TYPE;
+          const result = this.#doc.evaluate(selector, parent, null, resultType, null);
           if (all) {
             return Array.from({ length: result.snapshotLength }, (_, i) => result.snapshotItem(i));
           }
           return result.singleNodeValue;
         }
       } catch (error) {
-        console.error('[ElmGetter] 查询错误或选择器无效:', { selector, parent, error });
+        console.error('[ElmGetter] 查询失败:', { selector, error });
+        return all ? [] : null;
       }
-      return all ? [] : null;
     }
 
     /**
-     * 异步获取一个或多个元素，超时则返回已找到的元素
-     * @param {string|string[]} selector - 单个选择器或选择器数组
-     * @param {Node|number} [parent=document] - 起始节点或超时时间
-     * @param {number} [timeout=0] - 超时时间 (ms)，0 表示不超时
-     * @returns {Promise<Element|Element[]|null>} - 匹配的元素或元素数组
+     * 异步获取一个或多个元素，超时则返回已找到的结果
+     * @param {string|string[]} selectors - 单个或多个选择器
+     * @param {{parent?: Node, timeout?: number}} [options={}] - 选项
+     * @returns {Promise<Element|Element[]|null>}
      */
-    get(selector, parent = this[_doc], timeout = 0) {
-      // 优雅地处理灵活的参数顺序: get(selector, timeout) 或 get(selector, parent, timeout)
-      if (typeof parent === 'number') {
-        [timeout, parent] = [parent, this[_doc]];
-      }
-
-      const isSingle = !Array.isArray(selector);
-      const selectors = isSingle ? [selector] : selector;
-      if (selectors.length === 0) return Promise.resolve(isSingle ? null : []);
+    get(selectors, { parent = this.#doc, timeout = 0 } = {}) {
+      const isSingle = !Array.isArray(selectors);
+      const selArray = isSingle ? [selectors] : selectors;
 
       return new Promise(resolve => {
-        const results = Array(selectors.length).fill(null);
-        let pending = new Map(); // 使用 Map 存储待处理项，方便通过索引查找和删除
-        
-        // 1. 初始查询，找出已存在的元素
-        for (let i = 0; i < selectors.length; i++) {
-          const node = this.query(false, selectors[i], parent);
-          if (node) {
-            results[i] = node;
-          } else {
-            pending.set(i, selectors[i]);
+        const results = Array(selArray.length).fill(null);
+        const pending = new Map(selArray.map((sel, i) => [i, sel]));
+
+        for (const [index, selector] of pending.entries()) {
+          const found = this.query(selector, { parent });
+          if (found) {
+            results[index] = found;
+            pending.delete(index);
           }
         }
 
@@ -162,50 +128,38 @@
           return resolve(isSingle ? results[0] : results);
         }
 
-        let removeObserver;
+        let observerHandle;
         let timer;
 
-        const finish = () => {
-          if (removeObserver) removeObserver();
+        const cleanup = () => {
+          if (observerHandle) observerHandle.removeCallback(callback);
           if (timer) clearTimeout(timer);
+        };
+
+        const finish = () => {
+          cleanup();
           resolve(isSingle ? results[0] : results);
         };
 
-        // 2. **【核心优化】** 创建一个高效的回调函数来处理 DOM 变动
         const callback = (addedNode) => {
-          for (const [index, sel] of pending.entries()) {
-            let foundNode = null;
-            // 检查新增节点本身是否匹配
-            if (this[_matches].call(addedNode, sel)) {
-              foundNode = addedNode;
+          for (const [index, selector] of pending.entries()) {
+            let found = null;
+            if (addedNode.matches(selector)) {
+              found = addedNode;
             } else {
-              // 否则，仅在新增节点内部查找
-              foundNode = this.query(false, sel, addedNode);
+              found = this.query(selector, { parent: addedNode });
             }
-            
-            if (foundNode) {
-              results[index] = foundNode;
-              pending.delete(index); // 找到后从待处理中移除
-            }
-          }
 
-          if (pending.size === 0) {
-            finish();
+            if (found) {
+              results[index] = found;
+              pending.delete(index);
+            }
           }
+          if (pending.size === 0) finish();
         };
 
-        // 3. 启动观察者
-        removeObserver = this.observe(parent, callback);
-
-        // 再次检查，防止在设置观察者和实际观察到之间有元素出现
-        for (const [index, sel] of pending.entries()) {
-            const node = this.query(false, sel, parent);
-            if (node) {
-                results[index] = node;
-                pending.delete(index);
-            }
-        }
-        if (pending.size === 0) return finish();
+        observerHandle = this.#getSharedObserver(parent);
+        observerHandle.addCallback(callback);
 
         if (timeout > 0) {
           timer = setTimeout(finish, timeout);
@@ -214,139 +168,132 @@
     }
 
     /**
-     * 遍历处理所有现在和未来匹配选择器的元素
-     * @param {string} selector - CSS 或 XPath 选择器
-     * @param {Node|Function} parent - 起始节点或回调函数
-     * @param {Function} [callback] - 回调函数
-     * @returns {function(): void} - 调用此函数可停止遍历和观察
+     * 持续处理现在和未来所有匹配的元素
+     * @param {string} selector - 选择器
+     * @param {function(Element, boolean): (void|false)} callback - 回调函数 (element, isNew)。返回 false 可停止观察。
+     * @param {{parent?: Node}} [options={}] - 选项
+     * @returns {function(): void} - 调用此函数可手动停止观察
      */
-    each(selector, parent, callback) {
-      if (typeof parent === 'function') {
-        [callback, parent] = [parent, this[_doc]];
-      } else if (!parent || !(parent instanceof Node)) {
-        parent = this[_doc];
-      }
-
+    each(selector, callback, { parent = this.#doc } = {}) {
       if (typeof callback !== 'function') {
-        console.error('[ElmGetter] each: 回调必须是一个函数');
-        return () => {};
+        console.error('[ElmGetter] each: 回调必须是函数');
+        return () => { };
       }
 
-      const refs = new WeakSet(); // 使用 WeakSet 防止内存泄漏，并避免重复处理同一元素
+      const processed = new WeakSet();
       let active = true;
 
+      let stop;
       const processNode = (node, isNew) => {
-        if (!active || !node || refs.has(node)) return;
-        refs.add(node);
+        if (!active || processed.has(node)) return;
+        processed.add(node);
         try {
           if (callback(node, isNew) === false) {
-            stop();
+            stop(); // 此处调用时，stop 已经被赋值
           }
         } catch (error) {
           console.error('[ElmGetter] each 回调函数执行出错:', error);
-          stop(); // 出错时停止，防止无限循环的错误
+          stop();
         }
       };
-      
-      let stopObserver = null;
-      const stop = () => {
+
+      const observerCallback = (addedNode) => {
+        if (!active) return;
+        if (addedNode.matches(selector)) {
+          processNode(addedNode, true);
+        }
+        if (!active) return;
+        this.query(selector, { all: true, parent: addedNode }).forEach(node => processNode(node, true));
+      };
+
+      const observerHandle = this.#getSharedObserver(parent);
+
+      stop = () => {
+        if (!active) return;
         active = false;
-        if (stopObserver) {
-          stopObserver();
-          stopObserver = null;
-        }
+        observerHandle.removeCallback(observerCallback);
       };
 
-      // 延迟执行，确保返回 stop 函数后再开始处理
-      setTimeout(() => {
-        if (!active) return;
-
-        // 1. 处理已存在的元素
-        const existingNodes = this.query(true, selector, parent);
-        for (const node of existingNodes) {
-          if (!active) break;
-          processNode(node, false);
-        }
-
-        if (!active) return;
-        
-        // 2. **【核心优化】** 设置观察者，只处理新增的、匹配的节点
-        stopObserver = this.observe(parent, (node) => {
-          if (!active) return;
-          // 检查节点本身是否匹配
-          if (this[_matches].call(node, selector)) {
-            processNode(node, true);
-          }
-          if (!active) return;
-          // 检查其后代中是否有匹配的元素
-          const newNodes = this.query(true, selector, node);
-          for (const childNode of newNodes) {
-            if (!active) break;
-            processNode(childNode, true);
-          }
-        });
-      }, 0);
+      observerHandle.addCallback(observerCallback);
+      this.query(selector, { all: true, parent }).forEach(node => processNode(node, false));
 
       return stop;
     }
 
     /**
-     * 从 HTML 字符串创建 DOM 元素
-     * @param {string} domString - 包含HTML的字符串
-     * @param {boolean|Element} [parentOrReturnList=false] - 如果是布尔值，决定是否返回ID映射表；如果是元素，则将创建的节点追加进去
-     * @param {Element} [parent] - (可选) 将创建的节点追加到此父元素
-     * @returns {Element|Object|null} - 返回创建的元素，或一个包含根元素和ID映射的列表
+     * 为现在和未来的元素提供事件委托
+     * @param {string} eventName - 事件名称，如 'click'
+     * @param {string} selector - 目标元素的选择器
+     * @param {function(Event, Element): void} callback - 事件回调
+     * @param {{parent?: Node}} [options={}] - 选项
+     * @returns {function(): void} - 调用此函数可移除事件监听
      */
-    create(domString, parentOrReturnList, parent) {
-      if (typeof domString !== 'string' || !domString.trim()) return null;
+    on(eventName, selector, callback, { parent = this.#doc } = {}) {
+      const handler = (event) => {
+        const target = event.target.closest(selector);
+        if (target && parent.contains(target)) {
+          callback(event, target);
+        }
+      };
 
-      let returnList = false;
-      if (typeof parentOrReturnList === 'boolean') {
-        returnList = parentOrReturnList;
-      } else if (parentOrReturnList instanceof Element) {
-        parent = parentOrReturnList;
-      }
+      parent.addEventListener(eventName, handler, true);
 
-      // 使用 template 元素比 DOMParser 更高效、更安全
-      const template = this[_doc].createElement('template');
-      template.innerHTML = domString.trim();
+      return () => parent.removeEventListener(eventName, handler, true);
+    }
+
+    /**
+     * 从 HTML 字符串创建 DOM 元素
+     * @param {string} htmlString - HTML 字符串
+     * @param {{parent?: Element, mapIds?: boolean}} [options={}] - 选项
+     * @returns {Element|{[key: string]: Element}|null}
+     */
+    create(htmlString, { parent = null, mapIds = false } = {}) {
+      const template = this.#doc.createElement('template');
+      template.innerHTML = htmlString.trim();
       const node = template.content.firstElementChild;
 
       if (!node) return null;
       if (parent instanceof Element) parent.appendChild(node);
 
-      if (returnList) {
-        const list = { 0: node };
-        if (node.id) {
-          list[node.id] = node;
-        }
-        node.querySelectorAll('[id]').forEach(el => {
-          if (el.id) list[el.id] = el;
-        });
-        return list;
+      if (mapIds) {
+        const map = { 0: node, [node.id]: node };
+        node.querySelectorAll('[id]').forEach(el => { if (el.id) map[el.id] = el; });
+        return map;
       }
       return node;
     }
 
     /**
-     * 设置或获取当前的选择器模式
-     * @param {'css'|'xpath'} [mode] - 要设置的模式
-     * @returns {string} - 当前的模式
+     * 向页面注入 CSS 样式
+     * @param {string} css - CSS 样式文本
+     * @param {string} [id] - 为 <style> 标签指定一个ID，用于防止重复注入
+     * @returns {HTMLStyleElement}
      */
-    selector(mode) {
-      const lowerMode = mode?.toLowerCase();
-      if (lowerMode === 'xpath' || lowerMode === 'css') {
-        this[_mode] = lowerMode;
+    css(css, id = null) {
+      if (id && this.#doc.getElementById(id)) {
+        return this.#doc.getElementById(id);
       }
-      return this[_mode];
+      const style = this.create(`<style ${id ? `id="${id}"` : ''}>${css}</style>`);
+      this.#doc.head.appendChild(style);
+      return style;
     }
 
-    get currentSelector() {
-      return this[_mode];
+    /**
+     * 配置 ElmGetter 实例
+     * @param {{selectorMode: 'css'|'xpath'}} options - 配置选项
+     */
+    config({ selectorMode }) {
+      if (selectorMode === 'css' || selectorMode === 'xpath') {
+        this.#selectorMode = selectorMode;
+      }
+      return this;
+    }
+
+    get currentSelectorMode() {
+      return this.#selectorMode;
     }
   }
 
-  // 将实例挂载到 window 对象上
   if (typeof window.elmGetter === 'undefined') {
     window.elmGetter = new ElmGetter();
   }

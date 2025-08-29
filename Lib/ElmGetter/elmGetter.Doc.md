@@ -1,254 +1,178 @@
-## **elmGetter API 文档**
+## **elmGetter 2.0 API 文档**
 
-**版本:** 1.0.0
-**作者:** ank
+**版本:** 2.0.0
+**作者:** ank (Refactored by Gemini)
 
-`elmGetter` 是一个轻量级、高性能的异步 DOM 元素获取和操作库，专为 Tampermonkey 脚本设计。它提供了简洁的 API 来处理动态加载的元素、监听 DOM 变化以及创建 DOM 元素。
+`elmGetter` 是一个为现代用户脚本量身打造的高性能异步 DOM 操作库。它不仅提供了强大的元素获取和监听功能，还内置了事件委托和样式注入等实用工具，旨在简化动态网页环境下的脚本开发。
 
-### **核心理念：简单、高效、可靠**
+### **核心理念：现代、高效、强大**
 
-`elmGetter` 的设计目标是提供最简单易用的 API 来处理常见的 DOM 操作任务，特别是在动态网页环境中。它专注于三个核心功能：
+`elmGetter 2.0` 经过彻底重构，专注于提供：
 
-- **元素获取 (`get`)**: 异步等待并获取元素，支持超时设置
-- **元素监听 (`each`)**: 持续监听 DOM 变化，处理已存在和新添加的元素
-- **元素创建 (`create`)**: 从 HTML 字符串创建 DOM 元素
+- **清晰的 API**: 使用选项对象 (`{}`) 代替多重参数，代码意图一目了然。
+- **极致的性能**: 内部共享 `MutationObserver` 实例，自动管理生命周期，极大减少资源开销。
+- **强大的功能**: 内置事件委托 (`on`) 和样式注入 (`css`)，解决用户脚本开发的常见痛点。
 
 ---
 
 ### **核心方法**
 
-#### `async elmGetter.get(selector, [parent], [timeout])`
+#### `async elmGetter.get(selectors, [options])`
 
-异步获取匹配选择器的第一个元素。如果元素不存在，会等待元素出现或超时。
+异步获取一个或多个元素。如果元素当前不存在，将等待其出现直至超时。
 
-- **`selector`**: `string | string[]` - CSS 选择器字符串或选择器数组
-- **`parent`**: `Element` (可选) - 查询的父元素，默认为 `document`
-- **`timeout`**: `number` (可选) - 超时时间（毫秒），0 表示无限等待
+- **`selectors`**: `string | string[]` - 单个或多个 CSS/XPath 选择器。
+- **`options`**: `object` (可选) - 配置对象：
+  - `parent`: `Node` - 查询的起始节点，默认为 `document`。
+  - `timeout`: `number` - 超时时间（毫秒），`0` 表示不超时。
 
-**返回**: `Promise<Element | Element[] | null>` - 如果传入单个选择器，返回单个元素或 null；如果传入选择器数组，返回元素数组
+**返回**: `Promise<Element | Element[] | null>` - 若传入单个选择器，返回找到的元素或 `null`。若传入数组，返回一个元素数组（未找到的项为 `null`）。
 
 **示例:**
 
 ```javascript
-// 获取单个元素
-const element = await elmGetter.get('#my-element');
-if (element) {
-  console.log('找到元素:', element);
-}
+// 获取单个元素，超时 3 秒
+const el = await elmGetter.get('#dynamic-id', { timeout: 3000 });
 
-// 获取多个元素
-const elements = await elmGetter.get(['#el1', '.class2', '#el3']);
-const [el1, el2, el3] = elements;
+// 批量获取多个元素
+const [header, footer] = await elmGetter.get(['#header', '#footer']);
 
-// 在指定父元素中查找
-const parent = document.querySelector('.container');
-const child = await elmGetter.get('.child', parent);
-
-// 设置超时
-const element = await elmGetter.get('.dynamic-element', document, 5000);
-if (!element) {
-  console.log('5秒内未找到元素');
+// 在特定容器内查找
+const container = await elmGetter.get('.container');
+if (container) {
+  const item = await elmGetter.get('.item', { parent: container });
 }
 ```
 
-#### `elmGetter.each(selector, [parent], callback)`
+#### `elmGetter.each(selector, callback, [options])`
 
-遍历并监听匹配选择器的元素。会处理所有已存在的元素，并持续监听新添加的元素。
+持续处理现在和未来所有匹配选择器的元素。
 
-- **`selector`**: `string` - CSS 选择器
-- **`parent`**: `Element` (可选) - 监听的父元素，默认为 `document`
-- **`callback`**: `function(element, isNew)` - 回调函数
-  - `element` (`Element`): 当前处理的元素
-  - `isNew` (`boolean`): 如果元素是新添加的则为 `true`，否则为 `false`
-  - 如果回调函数返回 `false`，将停止处理和监听
+- **`selector`**: `string` - CSS/XPath 选择器。
+- **`callback`**: `function(element, isNew)` - 回调函数。
+  - `element` (`Element`): 当前处理的元素。
+  - `isNew` (`boolean`): 元素是否为动态新增的。
+  - **返回 `false` 可立即停止监听。**
+- **`options`**: `object` (可选) - 配置对象：
+  - `parent`: `Node` - 监听的根节点，默认为 `document`。
 
-**返回**: `function()` - 一个用于停止监听的函数
+**返回**: `function()` - 调用此函数可手动停止监听。
 
 **示例:**
 
 ```javascript
-// 处理所有已存在和新增的元素
-const stopListening = elmGetter.each('.item', (item, isNew) => {
-  console.log(`处理元素: ${item.textContent}, 是否新增: ${isNew}`);
-  item.style.color = 'blue';
-  
-  // 返回 false 可以停止监听
-  // return false;
-});
-
-// 在需要时停止监听
-// stopListening();
-
-// 在指定容器内监听
-const container = document.querySelector('.container');
-elmGetter.each('.card', container, (card, isNew) => {
+// 为所有 class 为 'highlight' 的元素添加边框
+const stopHighlighting = elmGetter.each('.highlight', (el, isNew) => {
+  el.style.border = '2px solid gold';
   if (isNew) {
-    card.classList.add('new-card');
+    console.log('新的高亮元素已添加!');
   }
 });
+
+// 10秒后停止监听
+setTimeout(stopHighlighting, 10000);
 ```
 
-#### `elmGetter.create(domString, [returnList], [parent])`
+#### `elmGetter.on(eventName, selector, callback, [options])`
 
-从 HTML 字符串创建 DOM 元素。
+为现在和未来的元素提供高效的事件委托。
 
-- **`domString`**: `string` - HTML 字符串
-- **`returnList`**: `boolean` (可选) - 是否返回包含 ID 映射的对象，默认为 `false`
-- **`parent`**: `Element` (可选) - 如果提供，创建的元素会自动附加到此父元素下
+- **`eventName`**: `string` - DOM 事件名称，如 `'click'`, `'mouseover'`。
+- **`selector`**: `string` - 目标元素的选择器。
+- **`callback`**: `function(event, element)` - 事件触发时的回调。
+  - `event` (`Event`): 原生事件对象。
+  - `element` (`Element`): 匹配选择器并触发事件的元素。
+- **`options`**: `object` (可选) - 配置对象：
+  - `parent`: `Node` - 监听事件的根节点，默认为 `document`。
 
-**返回**: `Element | object | null` - 默认返回创建的根元素。如果 `returnList` 为 `true`，返回包含 ID 映射的对象
+**返回**: `function()` - 调用此函数可移除事件监听器。
 
 **示例:**
 
 ```javascript
-// 创建单个元素
-const div = elmGetter.create('<div class="box">Hello World</div>');
-document.body.appendChild(div);
-
-// 创建元素并附加到父元素
-const container = document.querySelector('.container');
-elmGetter.create('<p>新段落</p>', container);
-
-// 创建元素并返回 ID 映射
-const structure = elmGetter.create(`
-  <div id="modal">
-    <h2 id="modal-title">标题</h2>
-    <p id="modal-content">内容</p>
-    <button id="modal-close">关闭</button>
-  </div>
-`, true);
-
-// 现在可以通过 ID 访问元素
-structure.modalTitle.textContent = '新标题';
-structure.modalClose.addEventListener('click', () => {
-  structure.modal.remove();
+// 当动态添加的 .delete-btn 被点击时，移除其父元素
+const stopDeleteListener = elmGetter.on('click', '.delete-btn', (e, btn) => {
+  btn.closest('.item').remove();
 });
+
+// 在需要时可以停止监听
+// stopDeleteListener();
+```
+
+#### `elmGetter.create(htmlString, [options])`
+
+从 HTML 字符串安全地创建 DOM 元素。
+
+- **`htmlString`**: `string` - 包含单个根元素的 HTML 字符串。
+- **`options`**: `object` (可选) - 配置对象：
+  - `parent`: `Element` - 若提供，创建的元素会自动附加到此父元素。
+  - `mapIds`: `boolean` - 若为 `true`，返回一个以元素 ID 为键的对象，默认为 `false`。
+
+**返回**: `Element | {[key: string]: Element} | null` - 创建的元素，或 ID 映射对象。
+
+**示例:**
+
+```javascript
+// 创建并附加一个新段落
+elmGetter.create('<p>Hello World</p>', { parent: document.body });
+
+// 创建一个复杂的 UI 组件并获取其内部元素的引用
+const ui = elmGetter.create(`
+  <div id="dialog">
+    <h3 id="dialogTitle">提示</h3>
+    <button id="closeBtn">关闭</button>
+  </div>
+`, { mapIds: true });
+
+ui.dialogTitle.textContent = '操作成功';
+ui.closeBtn.onclick = () => ui.dialog.remove();
+document.body.appendChild(ui.dialog);
 ```
 
 ---
 
 ### **工具方法**
 
-#### `elmGetter.selector(mode)`
+#### `elmGetter.css(cssText, [id])`
 
-设置或获取当前的选择器模式。
+向页面注入 CSS 样式，并可选择性地防止重复注入。
 
-- **`mode`**: `string` (可选) - 选择器模式：'css' 或 'xpath'
+- **`cssText`**: `string` - CSS 样式规则。
+- **`id`**: `string` (可选) - 为 `<style>` 标签指定一个 ID。如果页面上已存在该 ID 的元素，则不会重复注入。
 
-**返回**: `string` - 当前选择器模式
+**返回**: `HTMLStyleElement` - 创建或找到的 `<style>` 元素。
 
 **示例:**
 
 ```javascript
-// 设置为 CSS 模式（默认）
-elmGetter.selector('css');
-
-// 设置为 XPath 模式
-elmGetter.selector('xpath');
-
-// 获取当前模式
-const currentMode = elmGetter.selector;
-console.log(currentMode); // 'css' 或 'xpath'
+// 注入一些全局样式
+elmGetter.css(`
+  .my-script-modal { display: block; position: fixed; }
+  .my-script-overlay { background: rgba(0,0,0,0.5); }
+`, 'my-script-styles');
 ```
 
-#### `elmGetter.currentSelector`
+#### `elmGetter.config(options)`
+
+配置 `elmGetter` 的全局行为。
+
+- **`options`**: `object` - 配置对象：
+  - `selectorMode`: `'css' | 'xpath'` - 设置全局的选择器引擎。
+
+**返回**: `elmGetter` 实例本身，支持链式调用。
+
+**示例:**
+
+```javascript
+elmGetter.config({ selectorMode: 'xpath' });
+const element = await elmGetter.get("//div[contains(text(), 'unique text')]");
+elmGetter.config({ selectorMode: 'css' }); // 切换回默认模式
+```
+
+#### `elmGetter.currentSelectorMode`
 
 获取当前的选择器模式（只读属性）。
 
-**示例:**
-
 ```javascript
-console.log(elmGetter.currentSelector); // 'css' 或 'xpath'
+console.log(elmGetter.currentSelectorMode); // 'css' 或 'xpath'
 ```
-
----
-
-### **高级用法**
-
-#### **批量获取元素**
-
-`get` 方法支持传入选择器数组，可以同时获取多个元素：
-
-```javascript
-const selectors = ['#header', '.content', '#footer'];
-const elements = await elmGetter.get(selectors);
-const [header, content, footer] = elements;
-
-// 检查是否所有元素都找到了
-if (elements.every(el => el !== null)) {
-  console.log('所有元素都已找到');
-}
-```
-
-#### **使用 XPath 选择器**
-
-通过设置选择器模式为 XPath，可以使用更复杂的选择器：
-
-```javascript
-// 切换到 XPath 模式
-elmGetter.selector('xpath');
-
-// 使用 XPath 选择器
-const element = await elmGetter.get('//div[@class="item"]//a[contains(text(), "更多")]');
-
-// 切换回 CSS 模式
-elmGetter.selector('css');
-```
-
-#### **动态内容处理**
-
-结合 `get` 和 `each` 方法，可以处理各种动态内容场景：
-
-```javascript
-// 等待某个容器加载完成
-const container = await elmGetter.get('.dynamic-container');
-
-// 在容器内监听特定元素
-elmGetter.each('.item', container, (item, isNew) => {
-  if (isNew) {
-    console.log('新项目已添加:', item.textContent);
-    // 处理新项目
-  }
-});
-```
-
----
-
-### **错误处理**
-
-`elmGetter` 会在控制台输出错误信息，但不会抛出异常。对于无效的选择器或查询错误，会在控制台输出错误日志并返回 `null` 或空数组。
-
-**示例:**
-
-```javascript
-// 无效的选择器
-const element = await elmGetter.get('invalid[selector');
-// 控制台会输出错误信息，element 为 null
-
-// 超时处理
-const element = await elmGetter.get('.slow-element', document, 3000);
-if (!element) {
-  console.log('元素加载超时');
-}
-```
-
----
-
-### **性能考虑**
-
-1. **观察者管理**: `elmGetter` 内部使用 `MutationObserver` 来监听 DOM 变化，会自动管理观察者的生命周期，避免内存泄漏。
-
-2. **批量操作**: 当需要获取多个元素时，使用数组形式的选择器比多次调用 `get` 更高效。
-
-3. **及时停止**: 使用 `each` 方法时，如果不再需要监听，记得调用返回的停止函数以释放资源。
-
-4. **合理设置超时**: 对于可能不存在的元素，设置合理的超时时间，避免无限等待。
-
----
-
-### **兼容性**
-
-- 支持 Chrome、Firefox、Edge 等现代浏览器
-- 专为 Tampermonkey 用户脚本设计
-- 支持 CSS 和 XPath 选择器
-- 在 Shadow DOM 和 iframe 中也能正常工作（需要正确设置父元素）
