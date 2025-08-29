@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>QuantumDOM - 终极测试页面</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            background-color: #f8f9fa;
+        }
+
+        header {
+            background-color: #212529;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        main {
+            display: flex;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        #test-area,
+        #results {
+            flex: 1;
+            border: 1px solid #ccc;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 8px;
+        }
+
+        h1,
+        h2,
+        h3 {
+            border-bottom: 2px solid #dee2e6;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }
+
+        .test-case {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .status {
+            display: inline-block;
+            width: 50px;
+            text-align: center;
+            font-weight: bold;
+            padding: 3px 8px;
+            border-radius: 4px;
+            color: white;
+            margin-right: 10px;
+        }
+
+        .status.pass {
+            background-color: #28a745;
+        }
+
+        .status.fail {
+            background-color: #dc3545;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        #shadow-host,
+        #iframe-container {
+            border: 2px dashed #007bff;
+            padding: 10px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>QuantumDOM - 终极测试页面</h1>
+    </header>
+    <main>
+        <div id="test-area">
+            <h2>测试区域</h2>
+            <div class="controls">
+                <button onclick="runAllTests()">运行所有测试</button>
+                <button onclick="clearResults()">清除结果</button>
+            </div>
+            <div id="title">主文档标题</div>
+            <div id="create-area"></div>
+            <div id="shadow-host"></div>
+            <div id="iframe-container"><iframe id="test-iframe"></iframe></div>
+        </div>
+        <div id="results">
+            <h2>测试结果</h2>
+        </div>
+    </main>
+
+    <template id="iframe-template">
+        <!DOCTYPE html>
+        <html>
+
+        <head>
+            <title>Test Iframe</title>
+        </head>
+
+        <body>
+            <h3 id="iframe-title">Iframe 标题</h3><button class="iframe-btn">Iframe 按钮</button>
+        </body>
+
+        </html>
+    </template>
+
+    <script src="QuantumDOM.user.js"></script>
+
+    <script>
+        const shadowHost = document.getElementById('shadow-host');
+        const shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+        shadowRoot.innerHTML = `<h3>Shadow DOM 标题</h3><div id="shadow-div">Shadow Div</div><button class="shadow-btn">Shadow 按钮</button>`;
+        const iframe = document.getElementById('test-iframe');
+        iframe.srcdoc = document.getElementById('iframe-template').innerHTML;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const resultsDiv = document.getElementById('results');
+            const tests = [];
+            const test = (desc, fn) => tests.push({ desc, fn });
+            const assert = (cond, msg) => { if (!cond) throw new Error(msg || '断言失败'); };
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+            // --- Test Cases ---
+            test('GET: 基础 - 查找主文档元素', async () => {
+                const el = await QuantumDOM.get('#title');
+                assert(el && el.id === 'title');
+            });
+            test('GET: 穿透 - 查找 Shadow DOM 内的元素', async () => {
+                const el = await QuantumDOM.get('#shadow-host >>> shadow-root >>> #shadow-div');
+                assert(el && el.id === 'shadow-div');
+            });
+            test('GET: 穿透 - 查找 Iframe 内的元素', async () => {
+                const el = await QuantumDOM.get('#test-iframe >>> iframe-content >>> #iframe-title');
+                assert(el && el.id === 'iframe-title');
+            });
+            test('GET: 错误处理 - 超时应抛出 TimeoutError', async () => {
+                let caughtError = null;
+                try {
+                    await QuantumDOM.get('#non-existent', { timeout: 100 });
+                } catch (e) { caughtError = e; }
+                assert(caughtError instanceof QuantumDOM.TimeoutError, '应捕获到 TimeoutError');
+            });
+            test('GET: 批量获取', async () => {
+                const [title, nonExistent] = await QuantumDOM.get(['#title', '#non-existent'], { timeout: 50 });
+                assert(title && title.id === 'title', '批量获取应找到存在的元素');
+                assert(nonExistent === null, '批量获取中不存在的元素应返回 null');
+            });
+            test('EACH: 基础 - 监听主文档动态元素', async () => {
+                let found = false;
+                const stop = QuantumDOM.each('.main-dynamic', () => found = true);
+                const newEl = QuantumDOM.create('<div class="main-dynamic"></div>', { parent: document.body });
+                await sleep(50);
+                stop();
+                newEl.remove();
+                assert(found, '应监听到主文档的动态元素');
+            });
+            test('EACH: 穿透 - 监听 Shadow DOM 内的动态元素', async () => {
+                let found = false;
+                const selector = '#shadow-host >>> shadow-root >>> .shadow-dynamic';
+                const stop = QuantumDOM.each(selector, () => found = true);
+                const newEl = QuantumDOM.create('<div class="shadow-dynamic"></div>', { parent: shadowRoot });
+                await sleep(50);
+                stop();
+                newEl.remove();
+                assert(found, '应监听到 Shadow DOM 的动态元素');
+            });
+            test('ON: 基础 - 主文档事件委托', async () => {
+                let clicked = false;
+                const stop = await QuantumDOM.on('click', '#title', () => clicked = true);
+                document.getElementById('title').click();
+                await sleep(50);
+                stop();
+                assert(clicked, '主文档事件委托应触发');
+            });
+            test('ON: 穿透 - Shadow DOM 事件委托', async () => {
+                let clicked = false;
+                const selector = '#shadow-host >>> shadow-root >>> .shadow-btn';
+                const stop = await QuantumDOM.on('click', selector, () => clicked = true);
+                shadowRoot.querySelector('.shadow-btn').click();
+                await sleep(50);
+                stop();
+                assert(clicked, 'Shadow DOM 事件委托应触发');
+            });
+            test('ON: 穿透 - Iframe 事件委托', async () => {
+                let clicked = false;
+                const selector = '#test-iframe >>> iframe-content >>> .iframe-btn';
+                const stop = await QuantumDOM.on('click', selector, () => clicked = true);
+                iframe.contentDocument.querySelector('.iframe-btn').click();
+                await sleep(50);
+                stop();
+                assert(clicked, 'Iframe 事件委托应触发');
+            });
+            test('CREATE: 创建并附加元素', () => {
+                const parent = document.getElementById('create-area');
+                parent.innerHTML = '';
+                const el = QuantumDOM.create('<span>Created</span>', { parent });
+                assert(parent.contains(el) && el.tagName === 'SPAN');
+            });
+            test('CREATE: 创建并返回 ID 映射', () => {
+                const map = QuantumDOM.create('<div id="root"><b id="child"></b></div>', { mapIds: true });
+                assert(map && map.root && map.child && map.root.id === 'root');
+            });
+            test('CSS: 注入样式并验证', () => {
+                const styleId = 'test-style';
+                QuantumDOM.css('.test-css-class { font-size: 33px; }', styleId);
+                const el = QuantumDOM.create('<div class="test-css-class"></div>', { parent: document.body });
+                assert(window.getComputedStyle(el).fontSize === '33px', '注入的 CSS 应生效');
+                el.remove();
+                document.getElementById(styleId).remove();
+            });
+            test('CSS: 防止重复注入', () => {
+                const styleId = 'unique-style';
+                const s1 = QuantumDOM.css('body {}', styleId);
+                const s2 = QuantumDOM.css('body {}', styleId);
+                assert(document.querySelectorAll(`#${styleId}`).length === 1, '相同 ID 的 style 标签不应重复注入');
+                s1.remove();
+            });
+            test('CACHE: get() 结果应被缓存', async () => {
+                QuantumDOM.configure({ cacheEnabled: true });
+                QuantumDOM.clearCache();
+                const startTime = performance.now();
+                await QuantumDOM.get('#title');
+                const firstCallDuration = performance.now() - startTime;
+                const startTime2 = performance.now();
+                await QuantumDOM.get('#title');
+                const secondCallDuration = performance.now() - startTime2;
+                assert(secondCallDuration < 5, '第二次调用应从缓存中快速获取');
+            });
+            test('CONFIG: 配置应生效', () => {
+                QuantumDOM.configure({ debug: true, timeout: 12345 });
+                assert(QuantumDOM.config.debug === true && QuantumDOM.config.timeout === 12345);
+                QuantumDOM.configure({ debug: false, timeout: 10000 }); // Reset
+            });
+
+            // --- Test Runner ---
+            async function runAllTests() {
+                clearResults();
+                for (const t of tests) {
+                    const resultEl = document.createElement('div');
+                    resultEl.className = 'test-case';
+                    let status, message;
+                    try { await t.fn(); status = 'pass'; message = '成功'; }
+                    catch (e) { status = 'fail'; message = `失败: ${e.message}`; console.error(`Test failed: ${t.desc}`, e); }
+                    resultEl.innerHTML = `<span class="status ${status}">${status.toUpperCase()}</span> <strong>${t.desc}</strong> - <span>${message}</span>`;
+                    resultsDiv.appendChild(resultEl);
+                }
+                const passed = document.querySelectorAll('.status.pass').length;
+                const summary = document.createElement('div');
+                summary.innerHTML = `<h3>测试完成: ${passed}/${tests.length} 通过</h3>`;
+                resultsDiv.appendChild(summary);
+            }
+
+            window.runAllTests = runAllTests;
+            window.clearResults = () => resultsDiv.innerHTML = '<h2>测试结果</h2>';
+
+            iframe.addEventListener('load', () => setTimeout(runAllTests, 200));
+        });
+    </script>
+</body>
+
+</html>
