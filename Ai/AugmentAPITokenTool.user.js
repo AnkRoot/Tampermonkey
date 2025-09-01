@@ -4,6 +4,7 @@
 // @version      2.1.0
 // @author       ank
 // @namespace    http://010314.xyz/
+// @license      AGPL-3.0-or-later
 // @match        https://augmentcode.com/*
 // @match        https://*.augmentcode.com/*
 // @grant        GM_xmlhttpRequest
@@ -17,6 +18,7 @@
 // @run-at       document-end
 // @require      https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.user.js
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Ai/AugmentAPITokenTool.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Ai/AugmentAPITokenTool.user.js
 // ==/UserScript==
 (() => {
   'use strict';
@@ -106,13 +108,13 @@
     },
     async check(cred) {
       const statuses = new Set();
-      let lastBalance, lastEndDate, lastIncluded;
+      let balance, endDate, included;
 
       if (cred.subToken) {
         try {
-          ({ balance: lastBalance, endDate: lastEndDate, included: lastIncluded } = await this.info(cred.subToken));
-          if (lastEndDate && Date.now() > new Date(lastEndDate)) statuses.add('EXPIRED');
-          if (lastBalance <= 0) statuses.add('NO_BALANCE');
+          ({ balance, endDate, included } = await this.info(cred.subToken));
+          if (endDate && Date.now() > new Date(endDate)) statuses.add('EXPIRED');
+          if (balance <= 0) statuses.add('NO_BALANCE');
         } catch { statuses.add('ERROR'); }
       } else {
         statuses.add('NO_TOKEN');
@@ -132,7 +134,7 @@
       }
 
       const statusList = statuses.size > 0 ? Array.from(statuses) : ['ACTIVE'];
-      store.update(cred.id, { status: primaryStatus, statusList, lastBalance, lastEndDate, lastIncluded });
+      store.update(cred.id, { status: primaryStatus, statusList, balance, endDate, included });
       return primaryStatus;
     }
   };
@@ -219,13 +221,13 @@
       }).join('');
 
       const subURL = cred.subToken ? `https://portal.withorb.com/view?token=${cred.subToken}` : '';
-      const used = (cred.lastIncluded && cred.lastBalance != null) ? Math.max(0, Number(cred.lastIncluded) - Number(cred.lastBalance)) : undefined;
-      const pct = (cred.lastIncluded && cred.lastBalance != null) ? Math.min(100, Math.max(0, Math.round((Number(cred.lastBalance) / Number(cred.lastIncluded)) * 100))) : undefined;
+      const used = (cred.included && cred.balance != null) ? Math.max(0, Number(cred.included) - Number(cred.balance)) : undefined;
+      const pct = (cred.included && cred.balance != null) ? Math.min(100, Math.max(0, Math.round((Number(cred.balance) / Number(cred.included)) * 100))) : undefined;
 
-      const metrics = (cred.lastBalance != null || cred.lastEndDate || cred.lastIncluded != null) ?
+      const metrics = (cred.balance != null || cred.endDate || cred.included != null) ?
         `<div class="info-row">
-          <div class="info-item" title="复制余额" data-copy="${cred.lastBalance ?? ''}">💬 <span class="info-value">${cred.lastBalance ?? '?'}</span>${cred.lastIncluded ? ` / ${cred.lastIncluded}` : ''}${used != null ? ` · 已用: ${used}` : ''}</div>
-          ${cred.lastEndDate ? `<div class="info-item" title="复制到期时间" data-copy="${fmtDate(cred.lastEndDate)} UTC">⏳ <span class="info-value">${fmtDate(cred.lastEndDate)} UTC</span></div>` : ''}
+          <div class="info-item" title="复制余额" data-copy="${cred.balance ?? ''}">💬 <span class="info-value">${cred.balance ?? '?'}</span>${cred.included ? ` / ${cred.included}` : ''}${used != null ? ` · 已用: ${used}` : ''}</div>
+          ${cred.endDate ? `<div class="info-item" title="复制到期时间" data-copy="${fmtDate(cred.endDate)} UTC">⏳ <span class="info-value">${fmtDate(cred.endDate)} UTC</span></div>` : ''}
         </div>
         ${pct != null ? `<div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>` : ''}` : '';
 
@@ -329,7 +331,7 @@
     async loginIdentifier() {
       const { email } = json(GM_getValue('oauth', '{}')) || {};
       if (!email) return; // 未预设邮箱则不处理
-      const input = (await elmGetter.get('#username', 60000))[0];
+      const input = await elmGetter.get('#username', 60000);
       if (!input) return;
       input.value = email;
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -359,7 +361,7 @@
       ui.toast('获取令牌中...');
       try {
         const token = await oauth.token(tenant, code);
-        store.add({ tenant, token, email, verifier, challenge, state });
+        store.add({ code, tenant, token, email, verifier, challenge, state });
         GM_setValue('oauth', '');
         ui.toast('成功！跳转补充信息...');
         setTimeout(() => location.href = 'https://app.augmentcode.com/account/subscription', 1000);
@@ -369,7 +371,7 @@
     },
 
     async subscription() {
-      const logoutAndNotify = async (message, duration = 4000) => {
+      const logoutAndNotify = async (message, duration = 3000) => {
         ui.toast(message, duration);
         await sleep(1000);
         const logoutButton = $('button[data-testid="logout-button"]');
@@ -412,3 +414,4 @@
   if (location.href.includes('app.augmentcode.com/account/subscription')) setTimeout(pages.subscription, 1000);
 
 })();
+
