@@ -1,14 +1,16 @@
-// ==UserScript==
-// @name         !.Discourse HTML Markdown
+﻿// ==UserScript==
+// @name         !.Discourse HTML → Markdown Copier
 // @description  通用Discourse论坛HTML转Markdown复制工具，自动适配任何Discourse站点
 // @version      0.0.1
 // @author       ank
 // @namespace    http://010314.xyz/
+// @license      AGPL-3.0-or-later
 // @match        */t/topic/*
 // @match        */t/*
 // @grant        none
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-HTML-Markdown.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-HTML-Markdown.user.js
 // ==/UserScript==
 
 (function () {

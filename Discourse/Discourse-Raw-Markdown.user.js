@@ -1,6 +1,6 @@
-// ==UserScript==
-// @name         通用Discourse Raw Markdown复制器
-// @description  通用Discourse论坛Raw API Markdown复制工具。
+﻿// ==UserScript==
+// @name         !.Discourse Raw → Markdown Copier
+// @description  通用Discourse论坛Raw API Markdown复制工具
 // @version      2.2.0
 // @author       ank
 // @namespace    http://010314.xyz/

@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         ElmGetter 2.0
-// @description  新一代高性能异步DOM库，为用户脚本量身打造，提供事件委托和样式注入功能。
+// @name         !.ElmGetter 2.0
+// @description  新一代高性能异步DOM库，为用户脚本量身打造，提供事件委托和样式注入功能
 // @version      2.0.1
 // @author       ank
 // @namespace    http://010314.xyz/

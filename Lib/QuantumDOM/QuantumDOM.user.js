@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         QuantumDOM
-// @description  终极DOM实用工具库，结合了事件驱动的高性能与穿透Shadow DOM/Iframe的强大遍历能力。
+// @name         !.QuantumDOM
+// @description  终极DOM实用工具库，结合了事件驱动的高性能与穿透Shadow DOM/Iframe的强大遍历能力
 // @version      1.0.8
 // @author       ank
 // @namespace    http://010314.xyz/
