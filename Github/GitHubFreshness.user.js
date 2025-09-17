@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.GitHub Freshness
-// @description  🚀 用最直观的3色系统 (活跃/不活跃/归档) 显示仓库新鲜度，告别颜色混乱
-// @version      0.0.5
+// @description  🚀 以红/绿/黄+默认(不修改)四档标注新鲜度，仅改变时间文本颜色，不使用背景
+// @version      0.1.2
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0-or-later
@@ -13,32 +13,34 @@
 
 (function () {
   'use strict';
+  // WHY
+  // - 仅给时间文本着色，不使用任何背景/边框，避免破坏 GitHub 布局与左右留白。
+  // - 默认档(181–365天)不修改样式，保持页面原味，减少视觉噪音。
+  // - 使用 GitHub Primer 的语义色变量，自动适配深/浅主题并与站点风格一致。
+  // - 同时支持 relative-time 与 time-ago（Stars 页），确保一致性。
 
-  // --- 极简配置 ---
   const CONFIG = {
-    // 3级时间阈值 (天)
+    // 分级阈值(天)：<=60 绿；<=180 黄；<=365 默认(不改)；>365 红
     TIME_LEVELS: {
-      ACTIVE: 90,     // 90天内 -> 活跃
-      INACTIVE: 365,  // 90天至1年 -> 不活跃
-      // > 1年 -> 归档
+      ACTIVE: 60,
+      INACTIVE: 180,
+      DEFAULT: 365,
     },
-    // 3级颜色系统 (颜色取自GitHub原生UI，确保视觉和谐)
+    // 仅改变文本颜色；使用 Primer 语义变量，回退到旧变量保证兼容
     COLORS: {
-      ACTIVE: { color: '#2da44e', bg: 'rgba(234, 248, 237, 0.5)' }, // 绿色
-      INACTIVE: { color: '#bf8700', bg: 'rgba(252, 248, 227, 0.5)' }, // 黄色
-      ARCHIVED: { color: '#57606a', bg: 'rgba(246, 248, 250, 0.5)' }, // 灰色
-    },
-    DEBUG: false,
+      ACTIVE: { color: 'var(--fgColor-success, var(--color-success-fg, #2da44e))' },
+      INACTIVE: { color: 'var(--fgColor-attention, var(--color-attention-fg, #9a6700))' },
+      STALE: { color: 'var(--fgColor-danger, var(--color-danger-fg, #cf222e))' }
+    }
   };
+
+  const STYLE_ID = 'github-freshness-styles';
+  // 同时覆盖 Stars 页的 time-ago 与常见的 relative-time
+  const TIME_SELECTOR = 'relative-time[datetime], time-ago[datetime]';
 
   class GitHubFreshness {
     constructor(config) {
       this.config = config;
-      this.observer = new IntersectionObserver(this._handleIntersection.bind(this), {
-        root: null,
-        rootMargin: '0px 0px 500px 0px'
-      });
-      this._log('Initialized');
     }
 
     run() {
@@ -48,9 +50,8 @@
     }
 
     processVisiblePage() {
-      const timeElements = document.querySelectorAll('relative-time[datetime]:not([data-gfh-processed])');
-      this._log(`Found ${timeElements.length} unprocessed elements.`);
-      timeElements.forEach(el => this.observer.observe(el));
+      const timeElements = document.querySelectorAll(`${TIME_SELECTOR}:not([data-gfh-processed])`);
+      timeElements.forEach(el => this._processElement(el));
     }
 
     _processElement(element) {
@@ -63,93 +64,69 @@
       }
     }
 
-    _handleIntersection(entries, observer) {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const element = entry.target;
-          this._processElement(element);
-          observer.unobserve(element);
-        }
-      });
-    }
-
     _setupDynamicContentObserver() {
       const dynamicObserver = new MutationObserver(mutations => {
-        for (const mutation of mutations) {
-          for (const node of mutation.addedNodes) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              const newElements = node.querySelectorAll('relative-time[datetime]:not([data-gfh-processed])');
-              newElements.forEach(el => this.observer.observe(el));
-              if (node.matches('relative-time[datetime]:not([data-gfh-processed])')) {
-                this.observer.observe(node);
-              }
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            if (node.matches && node.matches(`${TIME_SELECTOR}:not([data-gfh-processed])`)) {
+              this._processElement(node);
+            }
+            if (node.querySelectorAll) {
+              node.querySelectorAll(`${TIME_SELECTOR}:not([data-gfh-processed])`).forEach(el => this._processElement(el));
             }
           }
         }
       });
       dynamicObserver.observe(document.body, { childList: true, subtree: true });
       document.addEventListener('pjax:end', () => {
-        this._log('pjax:end detected, re-processing page.');
         setTimeout(() => this.processVisiblePage(), 300);
       });
     }
 
     _injectCSS() {
-      const styleId = 'github-freshness-styles';
-      if (document.getElementById(styleId)) return;
+      if (document.getElementById(STYLE_ID)) return;
 
-      const styles = Object.entries(this.config.COLORS).map(([level, config]) => {
-        const className = `gfh-${level.toLowerCase()}`;
-        return `
-          .gfh-container.${className}-bg {
-            background-color: ${config.bg} !important;
-            border-left: 3px solid ${config.color} !important;
-          }
-          .${className}-text {
-            color: ${config.color} !important;
-            font-weight: 500 !important;
-          }
-        `;
-      }).join('');
+      const styles = Object.entries(this.config.COLORS)
+        .map(([level, cfg]) => {
+          const cls = `gfh-${level.toLowerCase()}`;
+          return `/* ${level} */
+          .${cls}-text {
+            color: ${cfg.color} !important;
+            }`;
+        })
+        .join('');
 
       const styleElement = document.createElement('style');
-      styleElement.id = styleId;
+      styleElement.id = STYLE_ID;
       styleElement.textContent = styles;
       document.head.appendChild(styleElement);
-      this._log('CSS styles injected.');
     }
 
     _applyHighlight(element, level) {
       if (!element || !level) return;
+      // DEFAULT 档位不做任何修改，保持 GitHub 原生样式
+      if (level === 'DEFAULT') return;
+
       const className = `gfh-${level.toLowerCase()}`;
       element.classList.add(`${className}-text`);
-
-      const container = element.closest(`
-        .Box-row, tr, li, article, .js-issue-row,
-        div[role="listitem"], [data-testid*="list-item"], [data-testid*="tree-row"]
-      `);
-
-      if (container) {
-        container.classList.add('gfh-container', `${className}-bg`);
-      }
     }
 
     _classifyDate(dateString) {
       try {
-        const diffDays = (new Date() - new Date(dateString)) / (1000 * 60 * 60 * 24);
+        const diffDays = (Date.now() - new Date(dateString).getTime()) / 86400000;
         const { TIME_LEVELS } = this.config;
         if (diffDays <= TIME_LEVELS.ACTIVE) return 'ACTIVE';
         if (diffDays <= TIME_LEVELS.INACTIVE) return 'INACTIVE';
-        return 'ARCHIVED';
-      } catch { return 'ARCHIVED'; }
-    }
-
-    _log(...args) {
-      if (this.config.DEBUG) console.log('[GitHub Freshness]', ...args);
+        if (diffDays <= TIME_LEVELS.DEFAULT) return 'DEFAULT';
+        return 'STALE';
+      } catch {
+        // 解析失败时不干预页面样式
+        return 'DEFAULT';
+      }
     }
   }
 
-  // --- 脚本入口 ---
   const freshnessChecker = new GitHubFreshness(CONFIG);
   freshnessChecker.run();
 
