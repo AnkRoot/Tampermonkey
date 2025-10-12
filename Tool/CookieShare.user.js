@@ -24,7 +24,7 @@
     if (window.self !== window.top) return;
 
     const I18N = {
-        cookieShareTitle: "Cookie 分享",
+        cookieShareTitle: "Cookie 存储",
         cookiesListTitle: "Cookie 配置列表",
         confirmDeleteTitle: "确认操作",
         closeButton: "×",
@@ -45,7 +45,7 @@
         webdavPassLabel: "密码",
         testingConnection: "正在测试连接...",
         testConnectionButton: "测试连接",
-        placeholderProfileName: "配置名称 (可使用浏览器填充)",
+        placeholderProfileName: "配置名称 (区分账户)",
         placeholderWebdavUrl: "https://dav.example.com/dav",
         placeholderWebdavUser: "WebDAV 用户名",
         placeholderWebdavPass: "WebDAV 密码",
