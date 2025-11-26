@@ -17,6 +17,37 @@
 // @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/AIAutoCaptcha.user.js
 // ==/UserScript==
 
+/**
+ * @project      AI 验证码自动识别 (AIAutoCaptcha)
+ * @version      2.3.0
+ * @description  一个配置一次、终身忘记的脚本。它静默地守护在浏览器右下角，只在需要时自动帮你搞定验证码，且绝不会在你不希望它出现的地方（如密码框）捣乱。
+ *
+ * ### 1. ⚡️ 极致的“无感”自动化体验
+ * - **全自动触发**：无需寻找悬浮图标，无需点击图片。脚本自动监测页面上的验证码图片。
+ * - **静默填入**：识别成功后，自动将验证码填入对应的输入框，并触发网页的原生事件（Input/Change），模拟人工输入。
+ * - **过程反馈**：在识别期间，输入框的 `placeholder` 会暂时变为“AI 识别中...”，让用户知道脚本正在工作，而不打扰视觉。
+ *
+ * ### 2. 🛡️ 银行级的安全与防误触机制
+ * - **绝对非空保护**：“有值不填”原则。在填入前会二次检查输入框，只要框内有一个字符，脚本就绝对不会覆盖。
+ * - **严格的黑名单系统**：通过类型和关键词双重黑名单，明确排除密码、邮箱、用户名等敏感输入框。
+ * - **智能白名单匹配**：优先锁定包含 `code`、`captcha`、`yzm` 等关键词的输入框。
+ * - **状态防抖**：使用 `WeakMap` 记录已处理过的图片，防止页面滚动或重绘时重复消耗 API 额度。
+ *
+ * ### 3. 🎨 统一且优雅的 UI 设计 (Shadow DOM)
+ * - **样式零侵入**：所有 UI 元素封装在 Shadow DOM (`mode: 'closed'`) 中，与宿主页面样式完全隔离。
+ * - **右下角统一布局**：通过呼吸灯指示器（🟢待机/🔵识别中/🔴错误）和浮动提示(Toast)提供清晰、低干扰的状态反馈。
+ * - **Glassmorphism 面板**：设置面板采用现代毛玻璃风格，提供流畅的交互体验。
+ *
+ * ### 4. 🧠 强大的 AI 兼容性
+ * - **多模型支持**：内置支持 OpenAI (及兼容接口)、Google Gemini、阿里通义千问 Qwen。
+ * - **自定义配置**：支持自定义 Base URL、API Key 和 Model 名称，适应性极强。
+ *
+ * ### 5. 💻 现代化的底层架构
+ * - **ES2022 标准**：全面使用 `class` 和 `#私有字段`，代码结构清晰，封装性好，无全局变量污染。
+ * - **智能取图**：优先使用 Canvas 读取图片数据，若遇跨域污染则自动降级为 `GM_xmlhttpRequest` 获取，兼顾速度与兼容性。
+ * - **轻量级**：原生 Vanilla JS 实现，无重型依赖，加载与执行速度极快。
+ */
+
 (function () {
     'use strict';
 
@@ -45,9 +76,9 @@
     class ConfigManager {
         #defaultConfig = {
             provider: 'openai',
-            openai: { baseUrl: 'https://api.openai.com/v1/chat/completions', apiKey: '', model: 'gpt-4o-mini' },
-            gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models', apiKey: '', model: 'gemini-1.5-flash' },
-            qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', apiKey: '', model: 'qwen-vl-max' },
+            openai: { baseUrl: 'https://api.openai.com/v1/chat/completions', apiKey: '', model: 'gpt-4o-mini', temperature: 0.1, top_p: 0.1 },
+            gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models', apiKey: '', model: 'gemini-1.5-flash', temperature: 0.1, top_p: 0.1 },
+            qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', apiKey: '', model: 'qwen-vl-max', temperature: 0.1, top_p: 0.1 },
             selectors: [
                 'img[src*="captcha"]', 'img[src*="verify"]', 'img[src*="code"]', 'img[id*="code"]', 'img[id*="Code"]',
                 'img[class*="captcha"]', 'img[class*="code"]', 'img[alt*="captcha"]', 'img[id="authImage"]',
@@ -88,7 +119,10 @@
                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
                     data: JSON.stringify({
                         model: config.model,
-                        messages: [{ role: "user", content: [{ type: "text", text: this.#systemPrompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }] }]
+                        messages: [{ role: "user", content: [{ type: "text", text: this.#systemPrompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }] }],
+                        temperature: config.temperature,
+                        max_tokens: config.max_tokens,
+                        top_p: config.top_p
                     }),
                     onload: (res) => {
                         try {
@@ -107,7 +141,10 @@
                 GM_xmlhttpRequest({
                     method: "POST", url: url,
                     headers: { "Content-Type": "application/json" },
-                    data: JSON.stringify({ contents: [{ parts: [{ text: this.#systemPrompt }, { inline_data: { mime_type: "image/png", data: base64 } }] }] }),
+                    data: JSON.stringify({
+                        contents: [{ parts: [{ text: this.#systemPrompt }, { inline_data: { mime_type: "image/png", data: base64 } }] }],
+                        generationConfig: { temperature: config.temperature, maxOutputTokens: config.max_tokens, topP: config.top_p }
+                    }),
                     onload: (res) => {
                         try {
                             const data = JSON.parse(res.responseText);
@@ -373,3 +410,4 @@
     }
     new AutoController();
 })();
+
