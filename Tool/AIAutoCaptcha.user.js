@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.AIAutoCaptcha
-// @description  全自动识别并输入，安全模式排除敏感输入框。
-// @version      2.3.0
+// @description  全自动识别并输入，安全模式排除敏感输入框。支持事件驱动极速响应、手动刷新智能重置、逻辑优化解决URL不变问题。
+// @version      2.4.0
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0-or-later
@@ -19,13 +19,16 @@
 
 /**
  * @project      AI 验证码自动识别 (AIAutoCaptcha)
- * @version      2.3.0
+ * @version      2.4.0
  * @description  一个配置一次、终身忘记的脚本。它静默地守护在浏览器右下角，只在需要时自动帮你搞定验证码，且绝不会在你不希望它出现的地方（如密码框）捣乱。
  *
- * ### 1. ⚡️ 极致的“无感”自动化体验
+ * ### 1. ⚡️ 极致的"无感"自动化体验
  * - **全自动触发**：无需寻找悬浮图标，无需点击图片。脚本自动监测页面上的验证码图片。
  * - **静默填入**：识别成功后，自动将验证码填入对应的输入框，并触发网页的原生事件（Input/Change），模拟人工输入。
- * - **过程反馈**：在识别期间，输入框的 `placeholder` 会暂时变为“AI 识别中...”，让用户知道脚本正在工作，而不打扰视觉。
+ * - **过程反馈**：在识别期间，输入框的 `placeholder` 会暂时变为"AI 识别中..."，让用户知道脚本正在工作，而不打扰视觉。
+ * - **⚡️ 极速响应**：引入 `load` 事件监听，图片刷新/切换完成的瞬间立即触发识别，消除轮询延迟。
+ * - **🔄 手动刷新支持**：监听图片点击事件，用户点击刷新验证码后，脚本会自动清空旧值并重新识别。
+ * - **🛠 逻辑优化**：不再单纯依赖 URL 变化检测，解决了部分网站 URL 不变但图片内容改变导致的无法识别问题。
  *
  * ### 2. 🛡️ 银行级的安全与防误触机制
  * - **绝对非空保护**：“有值不填”原则。在填入前会二次检查输入框，只要框内有一个字符，脚本就绝对不会覆盖。
@@ -121,7 +124,6 @@
                         model: config.model,
                         messages: [{ role: "user", content: [{ type: "text", text: this.#systemPrompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }] }],
                         temperature: config.temperature,
-                        max_tokens: config.max_tokens,
                         top_p: config.top_p
                     }),
                     onload: (res) => {
@@ -143,7 +145,7 @@
                     headers: { "Content-Type": "application/json" },
                     data: JSON.stringify({
                         contents: [{ parts: [{ text: this.#systemPrompt }, { inline_data: { mime_type: "image/png", data: base64 } }] }],
-                        generationConfig: { temperature: config.temperature, maxOutputTokens: config.max_tokens, topP: config.top_p }
+                        generationConfig: { temperature: config.temperature, topP: config.top_p }
                     }),
                     onload: (res) => {
                         try {
@@ -159,138 +161,63 @@
     }
 
     /**
-     * UI 管理 - 全部右下角
+     * UI 管理
      */
     class UiManager {
         #host; #shadow; #indicator; #toastTimer;
-
-        constructor(onOpenSettings) {
-            this.#initShadowDOM(onOpenSettings);
-        }
-
+        constructor(onOpenSettings) { this.#initShadowDOM(onOpenSettings); }
         #initShadowDOM(onOpenSettings) {
             this.#host = document.createElement('div');
-            // 宿主容器定位
             this.#host.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 0; height: 0; z-index: 2147483647;';
             document.body.appendChild(this.#host);
             this.#shadow = this.#host.attachShadow({ mode: 'closed' });
-
             const style = document.createElement('style');
             style.textContent = `
                 :host { font-family: system-ui, -apple-system, sans-serif; }
-
-                /* --- 右下角呼吸灯 --- */
-                .indicator {
-                    position: fixed;
-                    bottom: 15px;
-                    right: 15px;
-                    width: 12px; height: 12px; border-radius: 50%;
-                    background: #9CA3AF;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                    cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                    z-index: 10000;
-                    border: 2px solid white;
-                }
+                .indicator { position: fixed; bottom: 15px; right: 15px; width: 12px; height: 12px; border-radius: 50%; background: #9CA3AF; box-shadow: 0 0 10px rgba(0,0,0,0.1); cursor: pointer; transition: all 0.3s; z-index: 10000; border: 2px solid white; }
                 .indicator:hover { transform: scale(1.3); }
-
-                /* Tooltip for Indicator */
-                .indicator::after {
-                    content: attr(data-title);
-                    position: absolute; right: 20px; bottom: -4px;
-                    background: rgba(0,0,0,0.8); color: #fff;
-                    padding: 4px 10px; border-radius: 4px; font-size: 12px;
-                    white-space: nowrap; opacity: 0; visibility: hidden;
-                    transition: all 0.2s; pointer-events: none;
-                }
+                .indicator::after { content: attr(data-title); position: absolute; right: 20px; bottom: -4px; background: rgba(0,0,0,0.8); color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; opacity: 0; visibility: hidden; transition: all 0.2s; pointer-events: none; }
                 .indicator:hover::after { opacity: 1; visibility: visible; right: 25px; }
-
-                /* 状态颜色 */
-                .status-idle { background: #10B981; box-shadow: 0 0 8px #10B981; animation: breathe 3s infinite; }
+                .status-idle { background: #10B981; animation: breathe 3s infinite; }
                 .status-processing { background: #3B82F6; box-shadow: 0 0 12px #3B82F6; animation: blink 0.8s infinite; }
-                .status-error { background: #EF4444; box-shadow: 0 0 8px #EF4444; }
-
-                /* --- 提示气泡 (Toast) - 改为右下角向上浮动 --- */
-                .toast {
-                    position: fixed;
-                    bottom: 45px; /* 位于指示器上方 */
-                    right: 15px;
-                    padding: 8px 14px;
-                    background: rgba(31, 41, 55, 0.9);
-                    color: white;
-                    border-radius: 8px;
-                    font-size: 13px;
-                    opacity: 0;
-                    transform: translateY(10px); /* 初始位置向下偏移，产生上浮效果 */
-                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                    pointer-events: none;
-                    backdrop-filter: blur(4px);
-                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-                    display: flex; align-items: center; gap: 6px;
-                }
+                .status-error { background: #EF4444; }
+                .toast { position: fixed; bottom: 45px; right: 15px; padding: 8px 14px; background: rgba(31, 41, 55, 0.9); color: white; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(10px); transition: all 0.3s; pointer-events: none; backdrop-filter: blur(4px); }
                 .toast.show { opacity: 1; transform: translateY(0); }
-
-                /* --- 模态框 --- */
-                .modal-backdrop {
-                    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-                    background: rgba(0,0,0,0.3); backdrop-filter: blur(2px);
-                    display: flex; justify-content: center; align-items: center;
-                    opacity: 0; visibility: hidden; transition: all 0.2s;
-                }
+                .modal-backdrop { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.3); backdrop-filter: blur(2px); display: flex; justify-content: center; align-items: center; opacity: 0; visibility: hidden; transition: all 0.2s; }
                 .modal-backdrop.open { opacity: 1; visibility: visible; }
-                .modal-card {
-                    background: white; padding: 24px; border-radius: 16px; width: 360px;
-                    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-                    transform: scale(0.95); transition: transform 0.2s;
-                    display: flex; flex-direction: column; gap: 16px;
-                }
+                .modal-card { background: white; padding: 24px; border-radius: 16px; width: 360px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); transform: scale(0.95); transition: transform 0.2s; display: flex; flex-direction: column; gap: 16px; }
                 .modal-backdrop.open .modal-card { transform: scale(1); }
                 .modal-title { margin: 0; color: #111827; font-size: 18px; font-weight: 600; }
                 .form-group { display: flex; flex-direction: column; gap: 4px; }
                 .form-label { display: block; font-size: 12px; color: #4B5563; font-weight: 500; }
-                .form-input {
-                    width: 100%; padding: 8px 12px; border: 1px solid #D1D5DB;
-                    border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.2s;
-                    box-sizing: border-box; background-color: #fff;
-                }
+                .form-input { width: 100%; padding: 8px 12px; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.2s; box-sizing: border-box; background: #fff; color: #000; }
                 .form-input:focus { border-color: #3B82F6; }
-                .btn { padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.2s; }
-                .btn-primary { background: #2563EB; color: white; }
-                .btn-primary:hover { background: #1D4ED8; }
-                .btn-secondary { background: #F3F4F6; color: #374151; }
-                .btn-secondary:hover { background: #E5E7EB; }
                 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
-
+                .btn { padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; }
+                .btn-primary { background: #2563EB; color: white; }
+                .btn-secondary { background: #F3F4F6; color: #374151; }
                 @keyframes breathe { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
                 @keyframes blink { 0%, 100% { opacity: 0.5; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1.1); } }
             `;
             this.#shadow.appendChild(style);
-
             this.#indicator = document.createElement('div');
             this.#indicator.className = 'indicator';
             this.#indicator.onclick = onOpenSettings;
             this.#shadow.appendChild(this.#indicator);
-
             this.updateStatus('idle', 'AI 验证码待机中');
         }
-
         updateStatus(status, text) {
             this.#indicator.className = `indicator status-${status}`;
             this.#indicator.setAttribute('data-title', text);
         }
-
         showToast(msg) {
             let toast = this.#shadow.querySelector('.toast');
-            if (!toast) {
-                toast = document.createElement('div');
-                toast.className = 'toast';
-                this.#shadow.appendChild(toast);
-            }
+            if (!toast) { toast = document.createElement('div'); toast.className = 'toast'; this.#shadow.appendChild(toast); }
             toast.textContent = msg;
             toast.classList.add('show');
             clearTimeout(this.#toastTimer);
             this.#toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
         }
-
         renderSettingsModal(configManager, onSave) {
             let modal = this.#shadow.querySelector('.modal-backdrop');
             if (!modal) {
@@ -303,19 +230,13 @@
                         <div class="form-group"><label class="form-label">API 地址 (Base URL)</label><input id="u" class="form-input"></div>
                         <div class="form-group"><label class="form-label">API Key</label><input id="k" type="password" class="form-input"></div>
                         <div class="form-group"><label class="form-label">模型名称 (Model)</label><input id="m" class="form-input"></div>
-                        <div class="modal-actions">
-                            <button id="c" class="btn btn-secondary">取消</button>
-                            <button id="s" class="btn btn-primary">保存配置</button>
-                        </div>
+                        <div class="modal-actions"><button id="c" class="btn btn-secondary">取消</button><button id="s" class="btn btn-primary">保存配置</button></div>
                     </div>`;
                 this.#shadow.appendChild(modal);
                 const els = { p: modal.querySelector('#p'), u: modal.querySelector('#u'), k: modal.querySelector('#k'), m: modal.querySelector('#m'), c: modal.querySelector('#c'), s: modal.querySelector('#s') };
                 els.p.onchange = () => { const c = configManager.all[els.p.value]; els.u.value = c.baseUrl; els.k.value = c.apiKey; els.m.value = c.model; };
                 els.c.onclick = () => modal.classList.remove('open');
-                els.s.onclick = () => {
-                    onSave({ provider: els.p.value, [els.p.value]: { baseUrl: els.u.value, apiKey: els.k.value, model: els.m.value } });
-                    modal.classList.remove('open');
-                };
+                els.s.onclick = () => { onSave({ provider: els.p.value, [els.p.value]: { baseUrl: els.u.value, apiKey: els.k.value, model: els.m.value } }); modal.classList.remove('open'); };
             }
             const conf = configManager.all;
             const p = conf.provider;
@@ -329,19 +250,26 @@
     }
 
     class AutoController {
-        #configManager; #apiService; #uiManager; #imageState = new WeakMap();
+        #configManager; #apiService; #uiManager;
+        #observedImages = new WeakSet(); // 记录已绑定事件的图片
+        #processingMap = new WeakMap();  // 记录正在处理的图片，防止重复提交
+
         constructor() {
             this.#configManager = new ConfigManager();
             this.#apiService = new ApiService(this.#configManager);
             this.#uiManager = new UiManager(() => this.#openSettings());
             this.#checkApiKey();
             GM_registerMenuCommand('⚙️ 验证码设置', () => this.#openSettings());
-            setInterval(() => this.#scan(), 1500);
+
+            // 定时扫描新图片
+            setInterval(() => this.#scan(), 1000);
         }
+
         #checkApiKey() {
             const c = this.#configManager.all;
             if (!c[c.provider].apiKey) this.#uiManager.updateStatus('error', '未配置 Key (点击配置)');
         }
+
         #openSettings() {
             this.#uiManager.renderSettingsModal(this.#configManager, (c) => {
                 this.#configManager.save(c);
@@ -350,20 +278,48 @@
                 if (this.#configManager.all[this.#configManager.all.provider].apiKey) this.#uiManager.updateStatus('idle', 'AI 待机中');
             });
         }
+
         #scan() {
             if (this.#uiManager.status === 'error') return;
             const selectors = this.#configManager.all.selectors.join(',');
             const images = document.querySelectorAll(selectors);
+
             images.forEach(img => {
+                // 排除太小或不可见的图片
                 const rect = img.getBoundingClientRect();
                 if (rect.width < 30 || rect.height < 10 || window.getComputedStyle(img).visibility === 'hidden') return;
-                const state = this.#imageState.get(img);
-                if (!state || state.src !== img.src) {
-                    const input = this.#findInputSafe(img);
-                    if (input && !input.value) this.#process(img, input);
+
+                // 绑定事件到新图片
+                if (!this.#observedImages.has(img)) {
+                    this.#observedImages.add(img);
+                    this.#bindEvents(img);
+                    // 如果图片已经加载完成，立即尝试处理
+                    if (img.complete && img.naturalWidth > 0) {
+                        this.#process(img);
+                    }
                 }
             });
         }
+
+        // 事件驱动：监听图片加载和用户点击
+        #bindEvents(img) {
+            // 监听图片加载完成
+            img.addEventListener('load', () => {
+                // 延时一小段时间确保渲染完成
+                setTimeout(() => this.#process(img, true), 50);
+            });
+
+            // 监听用户点击刷新
+            img.addEventListener('click', () => {
+                const input = this.#findInputSafe(img);
+                if (input) {
+                    input.value = ''; // 清空旧验证码
+                    input.focus();
+                    this.#uiManager.updateStatus('processing', '等待刷新...');
+                }
+            });
+        }
+
         #findInputSafe(img) {
             let parent = img.parentElement;
             for (let i = 0; i < 3 && parent; i++) {
@@ -380,36 +336,65 @@
             }
             return null;
         }
-        async #process(img, input) {
-            this.#imageState.set(img, { src: img.src, status: 'processing' });
+
+        // @param {HTMLImageElement} img
+        // @param {boolean} force 是否强制识别
+        async #process(img, force = false) {
+            const input = this.#findInputSafe(img);
+            // 跳过无效情况
+            if (!input) return;
+
+            // 防止重复处理
+            if (this.#processingMap.get(img)) return;
+
+            // 简单防抖：如果输入框已有值，且不是由 load 事件触发的，大概率是已经填好了
+            if (input.value && !force) return;
+
+            this.#processingMap.set(img, true);
             this.#uiManager.updateStatus('processing', 'AI 识别中...');
             const originalPlaceholder = input.placeholder;
             input.placeholder = "AI 识别中...";
+
             try {
                 const base64 = await this.#imgToBase64(img);
-                if (!base64) throw new Error("Image Error");
+                if (!base64) throw new Error("Image Empty");
+
                 const code = await this.#apiService.identify(base64);
-                if (code && !input.value) {
+
+                // 再次检查输入框状态，防止网络请求期间用户已手动输入
+                if (code) {
                     input.value = code;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                     this.#uiManager.showToast(`已填入: ${code}`);
                 }
-            } catch (err) { } finally {
+            } catch (err) {
+                // 静默失败，不打扰用户
+            } finally {
                 input.placeholder = originalPlaceholder;
                 this.#uiManager.updateStatus('idle', 'AI 待机中');
-                this.#imageState.set(img, { src: img.src, status: 'done' });
+                this.#processingMap.delete(img);
             }
         }
+
         async #imgToBase64(img) {
             try {
-                if (!img.complete) await new Promise(r => img.onload = r);
+                // 确保图片已加载
+                if (!img.complete) await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                });
+
                 const canvas = document.createElement('canvas');
                 canvas.width = img.naturalWidth || 100;
                 canvas.height = img.naturalHeight || 40;
-                canvas.getContext('2d').drawImage(img, 0, 0);
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
                 return canvas.toDataURL('image/png');
-            } catch { return null; }
+            } catch (e) {
+                // 如果 Canvas 跨域污染 (Tainted)，可考虑后续扩展 GM_xhr 下载
+                return null;
+            }
         }
     }
     new AutoController();
