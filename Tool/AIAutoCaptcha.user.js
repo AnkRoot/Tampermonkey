@@ -58,22 +58,9 @@
      * 安全配置与黑名单
      */
     const SECURITY = {
-        TYPE_BLACKLIST: [
-            'password', 'email', 'search', 'url', 'date', 'datetime-local',
-            'month', 'week', 'time', 'color', 'file', 'hidden', 'image',
-            'submit', 'button', 'reset', 'checkbox', 'radio', 'range'
-        ],
-        KEYWORD_BLACKLIST: [
-            'user', 'name', 'login', 'account', 'uid', 'id',
-            'pwd', 'pass', 'auth_token',
-            'mail', 'phone', 'mobile', 'address',
-            'search', 'query', 'wd', 'keyword', 'q',
-            'title', 'content', 'msg', 'message',
-            'price', 'amount', 'num'
-        ],
-        KEYWORD_WHITELIST: [
-            'code', 'captcha', 'yzm', 'verify', 'check', 'auth', 'valid', 'verification', '验证', '校验'
-        ]
+        TYPE_BLACKLIST: ['password', 'email', 'search', 'url', 'date', 'datetime-local', 'month', 'week', 'time', 'color', 'file', 'hidden', 'image', 'submit', 'button', 'reset', 'checkbox', 'radio', 'range'],
+        KEYWORD_BLACKLIST: ['user', 'name', 'login', 'account', 'uid', 'id', 'pwd', 'pass', 'auth_token', 'mail', 'phone', 'mobile', 'address', 'search', 'query', 'wd', 'keyword', 'q', 'title', 'content', 'msg', 'message', 'price', 'amount', 'num'],
+        KEYWORD_WHITELIST: ['code', 'captcha', 'yzm', 'verify', 'check', 'auth', 'valid', 'verification', '验证', '校验']
     };
 
     class ConfigManager {
@@ -94,7 +81,7 @@
             try {
                 const stored = GM_getValue('ai_captcha_config_v3');
                 this.#config = stored ? { ...this.#defaultConfig, ...JSON.parse(stored) } : this.#defaultConfig;
-            } catch (e) { this.#config = this.#defaultConfig; }
+            } catch { this.#config = this.#defaultConfig; }
         }
         get all() { return this.#config; }
         save(newConfig) {
@@ -123,15 +110,14 @@
                     data: JSON.stringify({
                         model: config.model,
                         messages: [{ role: "user", content: [{ type: "text", text: this.#systemPrompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }] }],
-                        temperature: config.temperature,
-                        top_p: config.top_p
+                        temperature: config.temperature, top_p: config.top_p
                     }),
                     onload: (res) => {
                         try {
                             const data = JSON.parse(res.responseText);
                             if (data.error) reject(new Error(data.error.message));
                             else resolve(data.choices[0].message.content.trim());
-                        } catch (e) { reject(new Error("API 解析失败")); }
+                        } catch { reject(new Error("API 解析失败")); }
                     },
                     onerror: () => reject(new Error("网络错误"))
                 });
@@ -152,7 +138,7 @@
                             const data = JSON.parse(res.responseText);
                             if (data.error) reject(new Error(data.error.message));
                             else resolve(data.candidates[0].content.parts[0].text.trim());
-                        } catch (e) { reject(new Error("API 解析失败")); }
+                        } catch { reject(new Error("API 解析失败")); }
                     },
                     onerror: () => reject(new Error("网络错误"))
                 });
@@ -160,9 +146,6 @@
         }
     }
 
-    /**
-     * UI 管理
-     */
     class UiManager {
         #host; #shadow; #indicator; #toastTimer;
         constructor(onOpenSettings) { this.#initShadowDOM(onOpenSettings); }
@@ -176,8 +159,6 @@
                 :host { font-family: system-ui, -apple-system, sans-serif; }
                 .indicator { position: fixed; bottom: 15px; right: 15px; width: 12px; height: 12px; border-radius: 50%; background: #9CA3AF; box-shadow: 0 0 10px rgba(0,0,0,0.1); cursor: pointer; transition: all 0.3s; z-index: 10000; border: 2px solid white; }
                 .indicator:hover { transform: scale(1.3); }
-                .indicator::after { content: attr(data-title); position: absolute; right: 20px; bottom: -4px; background: rgba(0,0,0,0.8); color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; opacity: 0; visibility: hidden; transition: all 0.2s; pointer-events: none; }
-                .indicator:hover::after { opacity: 1; visibility: visible; right: 25px; }
                 .status-idle { background: #10B981; animation: breathe 3s infinite; }
                 .status-processing { background: #3B82F6; box-shadow: 0 0 12px #3B82F6; animation: blink 0.8s infinite; }
                 .status-error { background: #EF4444; }
@@ -223,15 +204,7 @@
             if (!modal) {
                 modal = document.createElement('div');
                 modal.className = 'modal-backdrop';
-                modal.innerHTML = `
-                    <div class="modal-card">
-                        <h3 class="modal-title">配置 AI 验证码</h3>
-                        <div class="form-group"><label class="form-label">服务商</label><select id="p" class="form-input"><option value="openai">OpenAI / 兼容</option><option value="gemini">Google Gemini</option><option value="qwen">通义千问</option></select></div>
-                        <div class="form-group"><label class="form-label">API 地址 (Base URL)</label><input id="u" class="form-input"></div>
-                        <div class="form-group"><label class="form-label">API Key</label><input id="k" type="password" class="form-input"></div>
-                        <div class="form-group"><label class="form-label">模型名称 (Model)</label><input id="m" class="form-input"></div>
-                        <div class="modal-actions"><button id="c" class="btn btn-secondary">取消</button><button id="s" class="btn btn-primary">保存配置</button></div>
-                    </div>`;
+                modal.innerHTML = `<div class="modal-card"><h3 class="modal-title">配置 AI 验证码</h3><div class="form-group"><label class="form-label">服务商</label><select id="p" class="form-input"><option value="openai">OpenAI / 兼容</option><option value="gemini">Google Gemini</option><option value="qwen">通义千问</option></select></div><div class="form-group"><label class="form-label">API 地址 (Base URL)</label><input id="u" class="form-input"></div><div class="form-group"><label class="form-label">API Key</label><input id="k" type="password" class="form-input"></div><div class="form-group"><label class="form-label">模型名称 (Model)</label><input id="m" class="form-input"></div><div class="modal-actions"><button id="c" class="btn btn-secondary">取消</button><button id="s" class="btn btn-primary">保存配置</button></div></div>`;
                 this.#shadow.appendChild(modal);
                 const els = { p: modal.querySelector('#p'), u: modal.querySelector('#u'), k: modal.querySelector('#k'), m: modal.querySelector('#m'), c: modal.querySelector('#c'), s: modal.querySelector('#s') };
                 els.p.onchange = () => { const c = configManager.all[els.p.value]; els.u.value = c.baseUrl; els.k.value = c.apiKey; els.m.value = c.model; };
@@ -251,8 +224,8 @@
 
     class AutoController {
         #configManager; #apiService; #uiManager;
-        #observedImages = new WeakSet(); // 记录已绑定事件的图片
-        #processingMap = new WeakMap();  // 记录正在处理的图片，防止重复提交
+        #observedImages = new WeakSet();
+        #processingMap = new WeakMap();
 
         constructor() {
             this.#configManager = new ConfigManager();
@@ -260,8 +233,8 @@
             this.#uiManager = new UiManager(() => this.#openSettings());
             this.#checkApiKey();
             GM_registerMenuCommand('⚙️ 验证码设置', () => this.#openSettings());
-
-            // 定时扫描新图片
+            
+            // 兜底扫描，防止 DOM 动态注入
             setInterval(() => this.#scan(), 1000);
         }
 
@@ -283,7 +256,7 @@
             if (this.#uiManager.status === 'error') return;
             const selectors = this.#configManager.all.selectors.join(',');
             const images = document.querySelectorAll(selectors);
-
+            
             images.forEach(img => {
                 // 排除太小或不可见的图片
                 const rect = img.getBoundingClientRect();
@@ -293,31 +266,48 @@
                 if (!this.#observedImages.has(img)) {
                     this.#observedImages.add(img);
                     this.#bindEvents(img);
-                    // 如果图片已经加载完成，立即尝试处理
-                    if (img.complete && img.naturalWidth > 0) {
-                        this.#process(img);
-                    }
+                    // 首次发现，如果图片已加载好，直接尝试处理
+                    if (img.complete && img.naturalWidth > 0) this.#process(img);
                 }
             });
         }
 
-        // 事件驱动：监听图片加载和用户点击
         #bindEvents(img) {
-            // 监听图片加载完成
+            // 1. MutationObserver: 监听 src 属性变化
+            // 这是为了在用户点击外部刷新按钮，导致图片 URL 改变时，瞬间清空输入框
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach(m => {
+                    if (m.type === 'attributes' && m.attributeName === 'src') {
+                        this.#clearInput(img);
+                    }
+                });
+            });
+            observer.observe(img, { attributes: true, attributeFilter: ['src'] });
+
+            // 2. Load Event: 监听图片资源加载完成
+            // 这是为了处理所有类型的刷新（包括 src 不变的情况），并触发 AI 识别
             img.addEventListener('load', () => {
-                // 延时一小段时间确保渲染完成
+                // 确保在识别前清空（针对 src 不变的情况）
+                this.#clearInput(img); 
+                // 延时极短时间确保渲染
                 setTimeout(() => this.#process(img, true), 50);
             });
+        }
 
-            // 监听用户点击刷新
-            img.addEventListener('click', () => {
-                const input = this.#findInputSafe(img);
-                if (input) {
-                    input.value = ''; // 清空旧验证码
-                    input.focus();
-                    this.#uiManager.updateStatus('processing', '等待刷新...');
+        #clearInput(img) {
+            const input = this.#findInputSafe(img);
+            if (input) {
+                // 如果当前正在处理中，不重复清空，防止闪烁
+                if (this.#processingMap.get(img)) return;
+                
+                // 只有当框内有值时才清空，给用户反馈“正在刷新”
+                if (input.value) {
+                    input.value = '';
+                    // 聚焦输入框，方便用户万一 AI 失败时手动输入
+                    // input.focus(); // 可选：视情况开启，防止抢焦点
+                    this.#uiManager.updateStatus('processing', '等待图片...');
                 }
-            });
+            }
         }
 
         #findInputSafe(img) {
@@ -341,14 +331,9 @@
         // @param {boolean} force 是否强制识别
         async #process(img, force = false) {
             const input = this.#findInputSafe(img);
-            // 跳过无效情况
             if (!input) return;
-
-            // 防止重复处理
-            if (this.#processingMap.get(img)) return;
-
-            // 简单防抖：如果输入框已有值，且不是由 load 事件触发的，大概率是已经填好了
-            if (input.value && !force) return;
+            if (this.#processingMap.get(img)) return; // 防重复
+            if (input.value && !force) return; // 有值且非强制，跳过
 
             this.#processingMap.set(img, true);
             this.#uiManager.updateStatus('processing', 'AI 识别中...');
@@ -357,12 +342,11 @@
 
             try {
                 const base64 = await this.#imgToBase64(img);
-                if (!base64) throw new Error("Image Empty");
-
+                if (!base64) throw new Error("Image Error");
                 const code = await this.#apiService.identify(base64);
-
-                // 再次检查输入框状态，防止网络请求期间用户已手动输入
-                if (code) {
+                
+                // 二次检查，防止识别期间用户已手动输入
+                if (code && !input.value) {
                     input.value = code;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -379,17 +363,11 @@
 
         async #imgToBase64(img) {
             try {
-                // 确保图片已加载
-                if (!img.complete) await new Promise((resolve, reject) => {
-                    img.onload = resolve;
-                    img.onerror = reject;
-                });
-
+                if (!img.complete) await new Promise((r, j) => { img.onload = r; img.onerror = j; });
                 const canvas = document.createElement('canvas');
                 canvas.width = img.naturalWidth || 100;
                 canvas.height = img.naturalHeight || 40;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
+                canvas.getContext('2d').drawImage(img, 0, 0);
                 return canvas.toDataURL('image/png');
             } catch (e) {
                 // 如果 Canvas 跨域污染 (Tainted)，可考虑后续扩展 GM_xhr 下载
