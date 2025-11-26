@@ -241,20 +241,24 @@
                     background: white; padding: 24px; border-radius: 16px; width: 360px;
                     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
                     transform: scale(0.95); transition: transform 0.2s;
+                    display: flex; flex-direction: column; gap: 16px;
                 }
                 .modal-backdrop.open .modal-card { transform: scale(1); }
-                .form-group { margin-bottom: 12px; }
-                .form-label { display: block; font-size: 12px; color: #4B5563; margin-bottom: 4px; font-weight: 500; }
+                .modal-title { margin: 0; color: #111827; font-size: 18px; font-weight: 600; }
+                .form-group { display: flex; flex-direction: column; gap: 4px; }
+                .form-label { display: block; font-size: 12px; color: #4B5563; font-weight: 500; }
                 .form-input {
                     width: 100%; padding: 8px 12px; border: 1px solid #D1D5DB;
                     border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.2s;
+                    box-sizing: border-box; background-color: #fff;
                 }
                 .form-input:focus { border-color: #3B82F6; }
                 .btn { padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.2s; }
                 .btn-primary { background: #2563EB; color: white; }
                 .btn-primary:hover { background: #1D4ED8; }
-                .btn-secondary { background: #F3F4F6; color: #374151; margin-right: 8px; }
+                .btn-secondary { background: #F3F4F6; color: #374151; }
                 .btn-secondary:hover { background: #E5E7EB; }
+                .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
                 @keyframes breathe { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
                 @keyframes blink { 0%, 100% { opacity: 0.5; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1.1); } }
@@ -294,12 +298,12 @@
                 modal.className = 'modal-backdrop';
                 modal.innerHTML = `
                     <div class="modal-card">
-                        <h3 style="margin:0 0 16px 0; color:#111827; font-size:18px">配置 AI 验证码</h3>
-                        <div class="form-group"><label class="form-label">服务商</label><select id="p" class="form-input" style="background:white"><option value="openai">OpenAI / 兼容</option><option value="gemini">Google Gemini</option><option value="qwen">通义千问</option></select></div>
+                        <h3 class="modal-title">配置 AI 验证码</h3>
+                        <div class="form-group"><label class="form-label">服务商</label><select id="p" class="form-input"><option value="openai">OpenAI / 兼容</option><option value="gemini">Google Gemini</option><option value="qwen">通义千问</option></select></div>
                         <div class="form-group"><label class="form-label">API 地址 (Base URL)</label><input id="u" class="form-input"></div>
                         <div class="form-group"><label class="form-label">API Key</label><input id="k" type="password" class="form-input"></div>
                         <div class="form-group"><label class="form-label">模型名称 (Model)</label><input id="m" class="form-input"></div>
-                        <div style="text-align:right; margin-top:20px">
+                        <div class="modal-actions">
                             <button id="c" class="btn btn-secondary">取消</button>
                             <button id="s" class="btn btn-primary">保存配置</button>
                         </div>
@@ -410,4 +414,3 @@
     }
     new AutoController();
 })();
-
