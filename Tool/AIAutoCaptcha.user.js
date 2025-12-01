@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.AIAutoCaptcha
 // @description  全自动识别并输入验证码。安全模式排除敏感输入框，支持跨域图片识别。使用现代视觉模型 (GPT-4o/Gemini/Qwen) 进行极速识别，智能逻辑不再依赖 URL 变化，提供银行级安全防护。
-// @version      3.0.2
+// @version      3.0.3
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0-or-later
@@ -30,7 +30,7 @@
  * ### 2. 🧠 现代 AI 协议与结构化 Prompt
  * - **System Prompt 分离**：修复旧版将指令混入 User 消息的问题。采用标准的 Role 分离结构，大幅提升对“计算题”、“字符过滤”的遵循度。
  * - **最佳参数锁定**：强制 `temperature: 0` 和 `top_p: 1`，消除 AI 的“创造性”，确保 OCR 结果的绝对确定性。
- * - **多模型适配**：完美适配 GPT-4o (Vision)、Google Gemini 1.5 (Native API)、通义千问 Qwen-VL。
+ * - **多模型适配**：完美适配 OpenAi、Google、通义千问。
  *
  * ### 3. 🛡️ 银行级的安全与防误触机制
  * - **绝对非空保护**：“有值不填”原则。只要框内有人工输入的字符，脚本绝不覆盖。
@@ -73,7 +73,7 @@ Rules:
         #defaultConfig = {
             provider: 'openai',
             openai: { baseUrl: 'https://api.openai.com/v1/chat/completions', apiKey: '', model: 'gpt-4o-mini' },
-            gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models', apiKey: '', model: 'gemini-1.5-flash' },
+            gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models', apiKey: '', model: 'gemini-2.0-flash-lite' },
             qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', apiKey: '', model: 'qwen-vl-max' },
             selectors: [
                 'img[src*="captcha" i]', 'img[src*="verify" i]', 'img[src*="code" i]', 'img[src*="validate" i]', 'img[src*="random" i]',
