@@ -1,39 +1,7 @@
 // ==UserScript==
 // @name         !.GitHub Freshness
-// @description  🔍 为 GitHub 的所有时间标记提供“新鲜度可视化增强”。
-//               自动为 relative-time / time-ago / local-time / time[datetime] 等组件添加
-//               清晰的时间鲜度状态标签，让你一眼识别仓库、Issue、PR、Commit 的活跃程度。
-// 
-//               ◼ 功能特点：
-//                 • 新鲜度分级：
-//                     🟢 active   — 过去 60 天内更新的内容（高活跃度）
-//                     🟡 inactive — 60～180 天内更新的内容（一般）
-//                     🔴 stale    — 180 天以上未更新（陈旧）
-// 
-//                 • 自动适配 GitHub 深色/浅色主题：
-//                   使用内建颜色变量 (--fgColor-*/--bgColor-* muted) 实现无侵入式视觉融合。
-// 
-//                 • UI 风格：
-//                   胶囊状标签、轻量边框、半透明衰减（stale），确保突出重点但视觉不过载。
-// 
-//                 • 强健的 DOM 监听：
-//                   通过 MutationObserver 监控 GitHub 动态页面（PJAX、SPA-like 加载），
-//                   对新增节点做增量式处理，无需再刷新页面。
-// 
-//                 • 高性能设计：
-//                   仅处理新增节点子树，避免全量扫描；内部采用标记属性防止重复处理。
-// 
-//                 • 全站覆盖：
-//                   适用于：仓库主页、Commit 列表、PR/Issue 列表、对话区、贡献图、讨论区等所有使用 GitHub 时间组件的区域。
-// 
-//               ◼ 使用价值：
-//                 • 快速判断仓库是否活跃（Star 前必看！）
-//                 • 浏览 Issue/PR 时立即看出哪些是“新鲜讨论”，哪些已久未处理
-//                 • 在贡献者视图中更快理解提交活跃度趋势
-//                 • 项目维护者可迅速识别长期无人更新的内容段
-//
-//               —— 一个让“时间信息真正有意义”的 GitHub 增强脚本。
-// @version      1.1.1
+// @description  🔍 GitHub 时间新鲜度可视化增强——为 relative-time 等组件添加状态标签（🟢60天内/🟡180天内/🔴陈旧），自动适配深浅主题，胶囊状标签，MutationObserver监听，高性能增量处理，全站覆盖仓库、Issue、PR、Commit等所有时间组件。
+// @version      1.1.2
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0
