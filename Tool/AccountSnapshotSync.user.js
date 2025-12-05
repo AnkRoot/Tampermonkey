@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.Account Snapshot Sync
-// @description  Save Snapshot默认写入本地，配置WebDAV后自动镜像；跨站Cookie/Storage快照一键恢复
-// @version      1.0.1
+// @description  以WebDAV为中心的账户快照同步工具。将会话（Cookie, localStorage, sessionStorage）保存为快照，实现多设备间的一致性。核心功能：1. 云端优先：将WebDAV作为单一数据源，本地作为智能缓存。2. 智能同步：自动拉取云端快照至本地缓存，确保数据最新。3. 冲突解决：当快照同时存在于本地和云端时，可通过左键点击标签设为默认源，右键点击强制覆盖，提供灵活的冲突管理。4. 手动控制：支持一键上传所有本地快照至云端，方便初次使用或数据迁移。
+// @version      1.1.1
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -36,6 +36,7 @@
             CLOUD_PREFIX: "csp_cld_",
             PREF_PREFIX: "csp_pref_",
             TIMEOUT: 15000,
+            TIP_KEY_PREFIX: "csp_tip_",
         };
     }
 
@@ -53,7 +54,8 @@
                 copy: '<path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>',
                 restore: '<path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>',
                 delete: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>',
-                upload: '<path d="M5 20h14v-2H5v2zm7-16-5.5 5.5h4V18h3V9.5h4L12 4z"/>'
+                upload: '<path d="M5 20h14v-2H5v2zm7-16-5.5 5.5h4V18h3V9.5h4L12 4z"/>',
+                sync: '<path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.68 2.81l1.46 1.46C19.54 14.76 20 13.43 20 12c0-4.42-3.58-8-8-8zm-6.78.73L3.76 6.19C2.46 7.84 2 9.67 2 11.5 2 15.57 5.03 19 9 19v3l4-4-4-4v3c-2.76 0-5-2.57-5-5.5 0-1.2.35-2.33.94-3.27z"/>'
             };
             return `<svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;display:block;">${icons[name] || ''}</svg>`;
         }
@@ -209,7 +211,7 @@
             await this.request("PUT", `${Config.CONSTS.BASE_PATH}${fileName}`, content, { "Content-Type": "application/json" });
 
             // 2. Update Manifest (Best Effort)
-            this.#updateManifest(fileName, 'add');
+            this.#updateManifest(fileName, 'add', contentObj?.meta?.time || Date.now());
         }
 
         async deleteFile(fileName) {
@@ -221,26 +223,45 @@
             this.#updateManifest(fileName, 'remove');
         }
 
-        async #updateManifest(fileName, action) {
+        #parseManifest(raw) {
+            if (!raw) return [];
+            const source = Array.isArray(raw) ? raw : Array.isArray(raw.files) ? raw.files : [];
+            return source.map(entry => {
+                if (typeof entry === "string") return { name: entry, time: null };
+                if (entry && typeof entry === "object" && entry.name) {
+                    return { name: entry.name, time: typeof entry.time === "number" ? entry.time : null };
+                }
+                return null;
+            }).filter(Boolean);
+        }
+
+        async getManifestList() {
+            try {
+                const res = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}?t=${Date.now()}`);
+                return this.#parseManifest(JSON.parse(res.responseText));
+            } catch (err) {
+                return [];
+            }
+        }
+
+        async #updateManifest(fileName, action, metaTime = null) {
             try {
                 let list = [];
                 try {
                     const r = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`);
-                    list = JSON.parse(r.responseText);
+                    list = this.#parseManifest(JSON.parse(r.responseText));
                 } catch (e) {}
 
-                let changed = false;
-                if (action === 'add' && !list.includes(fileName)) {
-                    list.push(fileName);
-                    changed = true;
-                } else if (action === 'remove' && list.includes(fileName)) {
-                    list = list.filter(f => f !== fileName);
-                    changed = true;
+                if (action === 'add') {
+                    const entry = { name: fileName, time: metaTime ?? Date.now() };
+                    const idx = list.findIndex(i => i.name === fileName);
+                    if (idx >= 0) list[idx] = entry;
+                    else list.push(entry);
+                } else if (action === 'remove') {
+                    list = list.filter(i => i.name !== fileName);
                 }
 
-                if (changed) {
-                    await this.request("PUT", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`, JSON.stringify(list), { "Content-Type": "application/json" });
-                }
+                await this.request("PUT", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`, JSON.stringify(list), { "Content-Type": "application/json" });
             } catch (e) {
                 console.warn("Manifest update warning:", e);
             }
@@ -290,6 +311,7 @@
         #host;
         #root;
         #dav = new WebDavClient();
+        #statusEl = null;
         #prefCache = new Map();
 
         constructor() {
@@ -314,14 +336,6 @@
                 }
                 * { box-sizing: border-box; outline: none; }
                 
-                .toast {
-                    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(20px);
-                    background: #222; color: #fff; padding: 10px 24px;
-                    font-family: var(--font); font-size: 13px; font-weight: 500;
-                    opacity: 0; pointer-events: none; transition: all 0.2s; z-index: 99999;
-                }
-                .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
                 .overlay {
                     position: fixed; inset: 0; background: rgba(0,0,0,0.2);
                     display: flex; align-items: center; justify-content: center;
@@ -342,6 +356,12 @@
                 .close-btn:hover { color: var(--danger); }
 
                 .body { padding: 16px; overflow-y: auto; }
+                .status-bar {
+                    display: none; margin-bottom: 10px; padding: 8px 12px;
+                    font-size: 12px; background: rgba(0,0,0,0.05); border: 1px solid #ccc;
+                }
+                .status-bar[data-type="error"] { border-color: #d33; color: #b00; background: #ffecec; }
+
                 label { display: block; font-size: 11px; font-weight: 700; color: var(--fg-sub); margin-bottom: 4px; text-transform: uppercase; }
                 input { width: 100%; padding: 8px; margin-bottom: 12px; background: #fff; border: 1px solid #aaa; border-radius: 0; font-size: 13px; }
                 input:focus { border-color: var(--accent); border-left: 3px solid var(--accent); }
@@ -373,6 +393,10 @@
                 .icon-btn:hover { color: #000; background: #eee; }
                 .icon-btn.del:hover { color: var(--danger); background: #fff0f0; }
 
+                .tip-bar {
+                    display: none; margin-bottom: 10px; padding: 6px 10px;
+                    font-size: 11px; color: #333; background: #f5f5ff; border: 1px dashed #99a;
+                }
                 details { border: 1px dashed #ccc; padding: 8px; margin-top: 10px; background: #fafafa; }
                 summary { font-size: 11px; cursor: pointer; color: var(--fg-sub); user-select: none; }
             `;
@@ -390,18 +414,23 @@
 
         close() { this.#root.querySelector(".overlay")?.classList.remove("open"); }
 
-        notify(msg) {
-            let t = this.#root.querySelector(".toast");
-            if (!t) { t = document.createElement("div"); t.className = "toast"; this.#root.appendChild(t); }
-            t.textContent = msg; t.classList.add("show");
-            if (t.dataset.timer) clearTimeout(parseInt(t.dataset.timer));
-            t.dataset.timer = setTimeout(() => t.classList.remove("show"), 3000);
+        #setStatus(msg = "", type = "info") {
+            if (!this.#statusEl) return;
+            this.#statusEl.textContent = msg || "";
+            this.#statusEl.dataset.type = type;
+            this.#statusEl.style.display = msg ? "block" : "none";
         }
 
         #localKey(id) { return Config.CONSTS.PREFIX + id; }
         #cloudKey(id) { return Config.CONSTS.CLOUD_PREFIX + id; }
         #prefKey(id) { return Config.CONSTS.PREF_PREFIX + id; }
         #belongsToHost(id) { return id.startsWith(`${location.hostname}_`); }
+        #showListTip(message = "") {
+            const tip = this.#root.querySelector("#list_tip");
+            if (!tip) return;
+            tip.textContent = message;
+            tip.style.display = message ? "block" : "none";
+        }
 
         async #getPreferredSource(id) {
             if (this.#prefCache.has(id)) return this.#prefCache.get(id);
@@ -423,25 +452,47 @@
         async #ensureDavReady() {
             const url = await Storage.get(Config.KEYS.DAV_URL);
             if (url) return true;
-            this.notify("请先配置 WebDAV");
+            this.#setStatus("请先配置 WebDAV", "error");
             return false;
         }
 
         async #syncFromCloud(interactive = false) {
-            const files = await this.#dav.listFiles();
             const host = location.hostname;
             let pulled = 0;
             const seen = new Set();
+            const manifestEntries = await this.#dav.getManifestList();
 
-            for (const file of files) {
-                if (!file.startsWith(host)) continue;
-                try {
-                    const remote = await this.#fetchRemoteSnapshot(file);
-                    await Storage.set(this.#cloudKey(file), remote);
+            if (manifestEntries.length > 0) {
+                for (const entry of manifestEntries) {
+                    const name = entry?.name;
+                    if (!name || !name.startsWith(host)) continue;
+                    seen.add(name);
+                    const cloudKey = this.#cloudKey(name);
+                    const cached = await Storage.get(cloudKey);
+                    const cachedTime = cached?.meta?.time || 0;
+                    const remoteTime = typeof entry.time === "number" ? entry.time : null;
+                    const shouldFetch = !cached || (remoteTime !== null && remoteTime > cachedTime);
+                    if (!shouldFetch) continue;
+                    try {
+                        const remote = await this.#fetchRemoteSnapshot(name);
+                        await Storage.set(cloudKey, remote);
+                        pulled++;
+                    } catch (err) {
+                        console.warn("Cloud fetch failed:", name, err);
+                    }
+                }
+            } else {
+                const files = await this.#dav.listFiles();
+                for (const file of files) {
+                    if (!file.startsWith(host)) continue;
                     seen.add(file);
-                    pulled++;
-                } catch (err) {
-                    console.warn("Cloud fetch failed:", file, err);
+                    try {
+                        const remote = await this.#fetchRemoteSnapshot(file);
+                        await Storage.set(this.#cloudKey(file), remote);
+                        pulled++;
+                    } catch (err) {
+                        console.warn("Cloud fetch failed:", file, err);
+                    }
                 }
             }
 
@@ -453,8 +504,8 @@
                 if (!seen.has(id)) await Storage.del(key);
             }
 
-            if (interactive) this.notify(`云端同步完成，共拉取 ${pulled} 份快照`);
-            return files;
+            if (interactive) this.#setStatus(`云端同步完成，共拉取 ${pulled} 份快照`, "info");
+            return Array.from(seen);
         }
 
         async #fetchRemoteSnapshot(fileName) {
@@ -472,7 +523,6 @@
             if (item.local && !item.cloud) return "local";
             if (item.cloud && !item.local) return "cloud";
             if (item.local && item.cloud) {
-                this.notify("提示：左键标签可设为默认来源");
                 const useCloud = window.confirm(`"${item.display}" 同时存在于本地与云端。\n确定=临时使用云端，取消=使用本地`);
                 return useCloud ? "cloud" : "local";
             }
@@ -511,7 +561,7 @@
                 const id = key.slice(prefix.length);
                 if (this.#belongsToHost(id)) keys.push(key);
             }
-            if (keys.length === 0) { this.notify("暂无本地快照"); return; }
+            if (keys.length === 0) { this.#setStatus("暂无本地快照", "info"); return; }
             const button = btn;
             const original = button.innerHTML;
             button.textContent = "上传中...";
@@ -529,8 +579,25 @@
                 }
             }
             button.innerHTML = original;
-            this.notify(`上传完成：${ok}/${keys.length}`);
+            this.#setStatus(`上传完成：${ok}/${keys.length}`, "info");
             this.loadList({ cloud: true });
+        }
+
+        async #uploadSingleSnapshot(item) {
+            if (!item.local) return this.#setStatus("当前仅存在云端版本", "info");
+            if (!(await this.#ensureDavReady())) return;
+            const data = await this.#readSnapshot(item.id, "local");
+            if (!data) return this.#setStatus("本地快照缺失", "error");
+            const confirmMsg = `上传 "${item.display}" 至云端？将覆盖同名云端快照。`;
+            if (!window.confirm(confirmMsg)) return;
+            try {
+                await this.#dav.saveFile(item.id, data);
+                await Storage.set(this.#cloudKey(item.id), data);
+                this.#setStatus("已上传至云端", "info");
+                this.loadList();
+            } catch (err) {
+                this.#setStatus("上传失败: " + Utils.safeErr(err), "error");
+            }
         }
 
         #buildTag(label, source, item, active) {
@@ -541,7 +608,7 @@
             tag.onclick = async (e) => {
                 e.preventDefault();
                 await this.#setPreferredSource(item.id, source);
-                this.notify(`默认来源已切换为 ${label}`);
+                this.#setStatus(`默认来源已切换为 ${label}`, "info");
                 this.loadList();
             };
             tag.oncontextmenu = async (e) => {
@@ -556,22 +623,22 @@
                 if (source === "local") {
                     if (!(await this.#ensureDavReady())) return;
                     const data = await this.#readSnapshot(item.id, "local");
-                    if (!data) return this.notify("本地快照缺失");
+                    if (!data) return this.#setStatus("本地快照缺失", "error");
                     if (!confirm(`使用本地快照 "${item.display}" 覆盖云端版本?`)) return;
                     await this.#dav.saveFile(item.id, data);
                     await Storage.set(this.#cloudKey(item.id), data);
-                    this.notify("云端已更新为本地版本");
+                    this.#setStatus("云端已更新为本地版本", "info");
                     this.loadList({ cloud: true });
                     return;
                 }
                 const remote = await this.#readSnapshot(item.id, "cloud");
-                if (!remote) return this.notify("云端快照缺失");
+                if (!remote) return this.#setStatus("云端快照缺失", "error");
                 if (!confirm(`使用云端快照 "${item.display}" 覆盖本地版本?`)) return;
                 await Storage.set(this.#localKey(item.id), remote);
-                this.notify("本地已更新为云端版本");
+                this.#setStatus("本地已更新为云端版本", "info");
                 this.loadList();
             } catch (err) {
-                this.notify("错误: " + Utils.safeErr(err));
+                this.#setStatus("错误: " + Utils.safeErr(err), "error");
             }
         }
 
@@ -585,6 +652,7 @@
                         <button class="close-btn">${Utils.icon('close')}</button>
                     </div>
                     <div class="body">
+                        <div class="status-bar" id="status_bar"></div>
                         <div class="tabs">
                             <div class="tab active" data-view="save">保存</div>
                             <div class="tab" data-view="list">管理</div>
@@ -606,10 +674,11 @@
                             <div style="margin-top:20px"><button class="btn primary" id="btn_do_save">${Utils.icon('save')} 保存快照</button></div>
                         </div>
                         <div id="view-list" style="display:none">
+                            <div class="tip-bar" id="list_tip"></div>
                             <div id="list_container" style="border:1px solid #ccc;border-bottom:none"></div>
                             <div style="display:flex;gap:8px;margin-top:12px">
-                                <button class="btn" id="btn_refresh" style="flex:1;border-style:dashed;">Sync Cloud 云同步</button>
-                                <button class="btn" id="btn_upload_all" style="flex:1;border-style:dashed;">${Utils.icon('upload')}上传本地</button>
+                                <button class="btn" id="btn_refresh" style="flex:1;border-style:dashed;">${Utils.icon('sync')}Sync Cloud 云同步</button>
+                                <button class="btn" id="btn_upload_all" style="flex:1;border-style:dashed;">${Utils.icon('upload')}上传本地快照</button>
                             </div>
                         </div>
                     </div>
@@ -618,6 +687,7 @@
             this.#root.appendChild(div);
 
             const q = (s) => div.querySelector(s);
+            this.#statusEl = q("#status_bar");
             q(".close-btn").onclick = () => this.close();
             div.onclick = (e) => { if (e.target === div) this.close(); };
             
@@ -635,12 +705,12 @@
                 await Storage.set(Config.KEYS.DAV_URL, q("#cfg_dav_url").value.trim());
                 await Storage.set(Config.KEYS.DAV_USER, q("#cfg_dav_user").value.trim());
                 await Storage.set(Config.KEYS.DAV_PASS, q("#cfg_dav_pass").value.trim());
-                this.notify("配置已保存");
+                this.#setStatus("配置已保存", "info");
             };
 
             q("#btn_do_save").onclick = async (e) => {
                 const name = q("#cfg_name").value.trim();
-                if (!name) return this.notify("请输入快照名称");
+                if (!name) return this.#setStatus("请输入快照名称", "error");
                 const btn = e.currentTarget; const old = btn.innerHTML; btn.textContent = "处理中...";
                 try {
                     const clean = Utils.sanitize(name);
@@ -651,12 +721,12 @@
                     if (q("#cfg_dav_url").value.trim()) {
                         await this.#dav.saveFile(fn, snap);
                         await Storage.set(this.#cloudKey(fn), snap);
-                        this.notify("已同步本地 + 云端");
+                        this.#setStatus("已同步本地 + 云端", "info");
                     } else {
-                        this.notify("已保存本地");
+                        this.#setStatus("已保存本地", "info");
                     }
                     q("#cfg_name").value = ""; this.loadList();
-                } catch (err) { console.error(err); this.notify(Utils.safeErr(err)); } 
+                } catch (err) { console.error(err); this.#setStatus(Utils.safeErr(err), "error"); } 
                 finally { btn.innerHTML = old; }
             };
 
@@ -682,7 +752,7 @@
                     try {
                         await this.#syncFromCloud(interactive);
                     } catch (err) {
-                        this.notify("云端同步失败: " + Utils.safeErr(err));
+                        this.#setStatus("云端同步失败: " + Utils.safeErr(err), "error");
                     }
                 }
 
@@ -705,6 +775,20 @@
                     }
                 }
 
+                const hasConflict = Array.from(map.values()).some(i => i.local && i.cloud);
+                if (hasConflict) {
+                    const tipKey = Config.CONSTS.TIP_KEY_PREFIX + host;
+                    const shown = await Storage.get(tipKey);
+                    if (!shown) {
+                        this.#showListTip("提示：左键点击本地/云端标签可设默认来源，右键可执行覆盖。");
+                        await Storage.set(tipKey, Date.now());
+                    } else {
+                        this.#showListTip("");
+                    }
+                } else {
+                    this.#showListTip("");
+                }
+
                 c.innerHTML = "";
                 if (map.size === 0) c.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">暂无快照</div>';
 
@@ -718,40 +802,57 @@
                     if (i.cloud) meta.appendChild(this.#buildTag("云端 CLD", "cloud", i, pref === "cloud"));
                     info.appendChild(name); info.appendChild(meta);
                     const actions = document.createElement("div"); actions.className = "actions";
-                    actions.innerHTML = `
-                        <button class="icon-btn" data-act="copy" title="复制">${Utils.icon('copy')}</button>
-                        <button class="icon-btn" data-act="restore" title="恢复">${Utils.icon('restore')}</button>
-                        <button class="icon-btn del" data-act="del" title="删除">${Utils.icon('delete')}</button>`;
-                    row.appendChild(info); row.appendChild(actions);
-                    c.appendChild(row);
-
-                    actions.querySelector('[data-act="copy"]').onclick = async () => {
+                    const makeBtn = (icon, title, cls = "icon-btn") => {
+                        const btn = document.createElement("button");
+                        btn.className = cls;
+                        btn.innerHTML = Utils.icon(icon);
+                        btn.title = title;
+                        return btn;
+                    };
+                    const btnCopy = makeBtn("copy", "复制");
+                    btnCopy.onclick = async () => {
                         try {
                             const source = await this.#chooseSource(i);
                             const d = await this.#readSnapshot(i.id, source);
                             GM_setClipboard(JSON.stringify(d, null, 2));
-                            this.notify(`已复制 (${source === "cloud" ? "云端" : "本地"})`);
-                        } catch (e) { this.notify("错误: " + Utils.safeErr(e)); }
+                            this.#setStatus(`已复制 (${source === "cloud" ? "云端" : "本地"})`, "info");
+                        } catch (e) { this.#setStatus("错误: " + Utils.safeErr(e), "error"); }
                     };
-                    actions.querySelector('[data-act="restore"]').onclick = async () => {
+                    actions.appendChild(btnCopy);
+
+                    if (i.local) {
+                        const btnUpload = makeBtn("upload", "上传至云端");
+                        btnUpload.onclick = () => this.#uploadSingleSnapshot(i);
+                        actions.appendChild(btnUpload);
+                    }
+
+                    const btnRestore = makeBtn("restore", "恢复");
+                    btnRestore.onclick = async () => {
                         if(!confirm(`恢复 "${i.display}" ?`)) return;
                         try {
                             const source = await this.#chooseSource(i);
                             const d = await this.#readSnapshot(i.id, source);
                             const count = await ProfileManager.restore(d);
-                            this.notify(`已恢复 ${count} 条 Cookie (${source === "cloud" ? "云端" : "本地"})，即将刷新`);
+                            this.#setStatus(`已恢复 ${count} 条 Cookie (${source === "cloud" ? "云端" : "本地"})，即将刷新`, "info");
                             await Utils.sleep(1000); location.reload();
-                        } catch(e) { this.notify("错误: " + Utils.safeErr(e)); }
+                        } catch(e) { this.#setStatus("错误: " + Utils.safeErr(e), "error"); }
                     };
-                    actions.querySelector('[data-act="del"]').onclick = async () => {
+                    actions.appendChild(btnRestore);
+
+                    const btnDelete = makeBtn("delete", "删除", "icon-btn del");
+                    btnDelete.onclick = async () => {
                         if(!confirm(`删除 "${i.display}" ?`)) return;
                         await Storage.del(this.#localKey(i.id));
                         await Storage.del(this.#cloudKey(i.id));
                         await Storage.del(this.#prefKey(i.id));
                         this.#prefCache.delete(i.id);
                         if(i.cloud) await this.#dav.deleteFile(i.id);
-                        this.loadList({ cloud: i.cloud }); this.notify("已删除");
+                        this.loadList({ cloud: i.cloud }); this.#setStatus("快照已删除", "info");
                     };
+                    actions.appendChild(btnDelete);
+
+                    row.appendChild(info); row.appendChild(actions);
+                    c.appendChild(row);
                 }
             } catch(e) { c.innerHTML=`<div style="color:red;padding:10px">${Utils.safeErr(e)}</div>`; }
         }
