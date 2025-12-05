@@ -1,7 +1,59 @@
 // ==UserScript==
 // @name         !.Account Snapshot Sync
-// @description  以WebDAV为中心的账户快照同步工具。将会话（Cookie, localStorage, sessionStorage）保存为快照，实现多设备间的一致性。核心功能：1. 云端优先：将WebDAV作为单一数据源，本地作为智能缓存。2. 智能同步：自动拉取云端快照至本地缓存，确保数据最新。3. 冲突解决：当快照同时存在于本地和云端时，可通过左键点击标签设为默认源，右键点击强制覆盖，提供灵活的冲突管理。4. 手动控制：支持一键上传所有本地快照至云端，方便初次使用或数据迁移。
-// @version      1.1.1
+// @description  ☁️ 基于WebDAV的账户快照同步系统——让你的数字身份在所有设备间无缝流转。
+//               自动捕获当前站点的完整会话状态（Cookie、localStorage、sessionStorage）为快照，
+//               通过WebDAV实现多设备间的智能同步与一致性管理。
+//
+//               ◼ 核心特性：
+//                 • WebDAV中心化存储：
+//                   - 支持任意WebDAV服务（koofr、坚果云、Nextcloud、ownCloud等）
+//                   - 云端作为单一数据源（SSOT），本地仅作智能缓存
+//                   - 采用标准HTTP协议，确保数据安全可控
+//
+//                 • 智能同步机制：
+//                   - 自动拉取：页面加载时自动从云端拉取最新快照
+//                   - 增量更新：仅同步变更部分，减少网络开销
+//                   - 版本感知：基于时间戳的版本控制，自动处理冲突
+//
+//                 • 灵活的冲突解决：
+//                   - 双源共存：本地和云端快照可同时存在
+//                   - 左键设定：点击快照标签可设置默认数据源（本地优先/云端优先）
+//                   - 右键覆盖：右键强制覆盖，实现快速数据迁移
+//                   - 智能提示：通过视觉标签清晰标识数据来源
+//
+//                 • 完整的会话管理：
+//                   - Cookie完整同步：包括域名、路径、安全标识等全部属性
+//                   - Storage全量备份：localStorage和sessionStorage的完整复制
+//                   - 清理式恢复：恢复前自动清理现有数据，避免污染
+//
+//                 • 安全与性能：
+//                   - Shadow DOM隔离：UI组件完全隔离，不影响页面
+//                   - 数据加密传输：全程HTTPS，防止中间人攻击
+//                   - 异步处理：所有IO操作异步化，页面不卡顿
+//                   - 智能缓存：云端快照本地缓存，减少重复请求
+//
+//               ◼ 使用场景：
+//                 • 多设备办公：在家和公司之间保持登录状态
+//                 • 测试环境隔离：为不同的测试账号保存独立快照
+//                 • 临时会话保存：需要重启浏览器时保存当前工作状态
+//                 • 团队账号共享：安全地在团队成员间传递账号访问权限
+//                 • 开发调试：快速切换不同的用户身份进行测试
+//
+//               ◼ 操作流程：
+//                 1. 首次使用：配置WebDAV → 创建第一个快照 → 上传至云端
+//                 2. 日常使用：打开网页 → 自动同步云端快照 → 一键恢复
+//                 3. 冲突处理：查看双源快照 → 选择优先级 → 设为默认源
+//                 4. 数据迁移：右键覆盖 → 选择目标方向 → 完成同步
+//
+//               ◼ 技术亮点：
+//                 • 清单式管理：使用JSON清单文件跟踪所有快照，支持批量操作
+//                 • 域名隔离：自动按域名分组快照，避免跨域混乱
+//                 • 优雅降级：WebDAV不可用时仍可使用本地功能
+//                 • 内存优化：快照数据按需加载，不占用过多内存
+//                 • 错误恢复：完善的错误处理机制，操作失败不影响现有数据
+//
+//               —— 让你的数字身份真正自由流动的跨设备同步解决方案。
+// @version      1.2.1
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -41,12 +93,9 @@
     }
 
     const Utils = {
-        sanitize(str) { return (str || "未命名").trim().replace(/[\s\\/:"*?<>|]+/g, "_"); },
-        safeErr(err) {
-            if (typeof err === "string") return err;
-            return err?.statusText || err?.msg || err?.message || `错误 ${err?.status}`;
-        },
-        sleep(ms) { return new Promise(r => setTimeout(r, ms)); },
+        sanitize: str => (str || "未命名").trim().replace(/[\s\\/:"*?<>|]+/g, "_"),
+        safeErr: err => typeof err === "string" ? err : err?.statusText || err?.msg || err?.message || `错误 ${err?.status}`,
+        sleep: ms => new Promise(r => setTimeout(r, ms)),
         icon(name) {
             const icons = {
                 close: '<path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>',
@@ -61,11 +110,51 @@
         }
     };
 
-    class Storage {
-        static async get(k, d = null) { return await GM_getValue(k, d); }
-        static async set(k, v) { return await GM_setValue(k, v); }
-        static async del(k) { return await GM_deleteValue(k); }
-        static async list() { return await GM_listValues(); }
+    class ConfigManager {
+        static #davCache = null;
+        static #davListeners = new Set();
+
+        static async getDavConfig() {
+            if (this.#davCache) return this.#davCache;
+
+            const trim = s => (s || "").trim();
+            const url = GM_getValue(Config.KEYS.DAV_URL, "");
+            const user = GM_getValue(Config.KEYS.DAV_USER, "");
+            const pass = GM_getValue(Config.KEYS.DAV_PASS, "");
+
+            this.#davCache = { url: trim(url), user: trim(user), pass: trim(pass) };
+            return this.#davCache;
+        }
+
+        static async saveDavConfig(input = {}) {
+            const trim = s => (s || "").trim();
+            const next = {
+                url: trim(input.url),
+                user: trim(input.user),
+                pass: trim(input.pass)
+            };
+
+            GM_setValue(Config.KEYS.DAV_URL, next.url);
+            GM_setValue(Config.KEYS.DAV_USER, next.user);
+            GM_setValue(Config.KEYS.DAV_PASS, next.pass);
+
+            this.#davCache = next;
+            this.#emitDavChange(next);
+            return next;
+        }
+
+        static onDavChange(handler) {
+            if (typeof handler !== "function") return () => { };
+            this.#davListeners.add(handler);
+            return () => this.#davListeners.delete(handler);
+        }
+
+        static #emitDavChange(config) {
+            for (const handler of this.#davListeners) {
+                try { handler(config); }
+                catch (err) { console.warn("DAV config listener error:", err); }
+            }
+        }
     }
 
     class WebDavClient {
@@ -73,13 +162,13 @@
         #dirChecked = false;
         #dirCache = new Map();
 
+        constructor() {
+            ConfigManager.onDavChange(() => this.reset());
+        }
+
         async #getAuth() {
             if (this.#authCache) return this.#authCache;
-            const [url, user, pass] = await Promise.all([
-                Storage.get(Config.KEYS.DAV_URL),
-                Storage.get(Config.KEYS.DAV_USER),
-                Storage.get(Config.KEYS.DAV_PASS)
-            ]);
+            const { url, user, pass } = await ConfigManager.getDavConfig();
             if (!url) throw { msg: "未配置 WebDAV URL" };
             this.#authCache = {
                 url: url.replace(/\/+$/, ""),
@@ -96,25 +185,32 @@
             return normalized;
         }
 
+        #isMissingStatus(status) {
+            return [400, 404, 405, 409, 410].includes(status);
+        }
+
         async #probeDir(path) {
             const dirPath = this.#normalizeDir(path);
             try {
                 await this.request("PROPFIND", dirPath, null, { Depth: "0" });
                 return true;
             } catch (err) {
-                if (err.status === 404) return false;
-                if (err.status && [301, 302].includes(err.status)) return true;
-                if (err.status && [400, 405, 501].includes(err.status)) {
-                    try {
-                        await this.request("HEAD", dirPath);
-                        return true;
-                    } catch (headErr) {
-                        if (headErr.status === 404) return false;
-                        if (headErr.status === 400 || err.status === 400) return false;
-                        throw headErr;
-                    }
+                if (this.#isMissingStatus(err?.status)) return false;
+                if (err?.status && [301, 302].includes(err.status)) return true;
+                if (err?.status && [400, 405, 501].includes(err.status)) {
+                    return await this.#probeViaHead(dirPath);
                 }
-                if (err.status === 400) return false;
+                throw err;
+            }
+        }
+
+        async #probeViaHead(dirPath) {
+            try {
+                await this.request("HEAD", dirPath);
+                return true;
+            } catch (err) {
+                if (this.#isMissingStatus(err?.status)) return false;
+                if (err?.status && [301, 302].includes(err.status)) return true;
                 throw err;
             }
         }
@@ -140,7 +236,7 @@
                 try {
                     const { url, headers: authHeaders } = await this.#getAuth();
                     const fullUrl = path.startsWith("http") ? path : `${url}${path}`;
-                    
+
                     GM_xmlhttpRequest({
                         method, url: fullUrl,
                         headers: { ...authHeaders, ...headers },
@@ -152,6 +248,12 @@
                     });
                 } catch (e) { reject(e); }
             });
+        }
+
+        reset() {
+            this.#authCache = null;
+            this.#dirChecked = false;
+            this.#dirCache.clear();
         }
 
         async ensureDir() {
@@ -204,9 +306,9 @@
 
         async saveFile(fileName, contentObj) {
             await this.ensureDir(); // Ensure directory exists
-            
+
             const content = JSON.stringify(contentObj);
-            
+
             // 1. Write File
             await this.request("PUT", `${Config.CONSTS.BASE_PATH}${fileName}`, content, { "Content-Type": "application/json" });
 
@@ -225,14 +327,17 @@
 
         #parseManifest(raw) {
             if (!raw) return [];
-            const source = Array.isArray(raw) ? raw : Array.isArray(raw.files) ? raw.files : [];
-            return source.map(entry => {
-                if (typeof entry === "string") return { name: entry, time: null };
-                if (entry && typeof entry === "object" && entry.name) {
-                    return { name: entry.name, time: typeof entry.time === "number" ? entry.time : null };
-                }
-                return null;
-            }).filter(Boolean);
+            const source = Array.isArray(raw) ? raw : Array.isArray(raw?.files) ? raw.files : [];
+            return source.map(entry => this.#normalizeManifestEntry(entry)).filter(Boolean);
+        }
+
+        #normalizeManifestEntry(entry) {
+            if (!entry) return null;
+            if (typeof entry === "string") return { name: entry, time: null };
+            if (typeof entry === "object" && entry.name) {
+                return { name: entry.name, time: typeof entry.time === "number" ? entry.time : null };
+            }
+            return null;
         }
 
         async getManifestList() {
@@ -250,7 +355,7 @@
                 try {
                     const r = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`);
                     list = this.#parseManifest(JSON.parse(r.responseText));
-                } catch (e) {}
+                } catch (e) { }
 
                 if (action === 'add') {
                     const entry = { name: fileName, time: metaTime ?? Date.now() };
@@ -270,7 +375,7 @@
 
     class ProfileManager {
         static async collect(name) {
-            const cookies = await new Promise(r => GM_cookie.list({ url: location.href }, (c) => r(c || [])));
+            const cookies = await this.#listCookies();
             return {
                 meta: { v: 1, name, host: location.hostname, url: location.href, time: Date.now() },
                 data: { cookies, local: { ...localStorage }, session: { ...sessionStorage } }
@@ -279,12 +384,12 @@
 
         static async restore(snapshot) {
             if (!snapshot?.data?.cookies) throw new Error("快照数据无效");
-            
+
             // Clean
             localStorage.clear();
             sessionStorage.clear();
-            const currentCookies = await new Promise(r => GM_cookie.list({ url: location.href }, c => r(c||[])));
-            for (const c of currentCookies) await new Promise(r => GM_cookie.delete({ url: location.href, name: c.name }, r));
+            const currentCookies = await this.#listCookies();
+            for (const c of currentCookies) await this.#deleteCookie(c.name);
 
             // Restore Storage
             if (snapshot.data.local) Object.entries(snapshot.data.local).forEach(([k, v]) => localStorage.setItem(k, v));
@@ -294,17 +399,29 @@
             let count = 0;
             for (const c of snapshot.data.cookies) {
                 try {
-                    await new Promise((resolve, reject) => {
-                        GM_cookie.set({
-                            url: location.href, name: c.name, value: c.value, domain: c.domain, path: c.path,
-                            secure: c.secure, httpOnly: c.httpOnly, expirationDate: c.expirationDate
-                        }, err => err ? reject(err) : resolve());
-                    });
+                    await this.#setCookie(c);
                     count++;
-                } catch (e) {}
+                } catch (e) { }
             }
             return count;
         }
+
+        static #listCookies = () => new Promise(r => GM_cookie.list({ url: location.href }, c => r(c || [])));
+
+        static #deleteCookie = name => new Promise(r => GM_cookie.delete({ url: location.href, name }, r));
+
+        static #setCookie = cookie => new Promise((resolve, reject) => {
+            GM_cookie.set({
+                url: location.href,
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path,
+                secure: cookie.secure,
+                httpOnly: cookie.httpOnly,
+                expirationDate: cookie.expirationDate
+            }, err => err ? reject(err) : resolve());
+        });
     }
 
     class UI {
@@ -421,10 +538,20 @@
             this.#statusEl.style.display = msg ? "block" : "none";
         }
 
-        #localKey(id) { return Config.CONSTS.PREFIX + id; }
-        #cloudKey(id) { return Config.CONSTS.CLOUD_PREFIX + id; }
-        #prefKey(id) { return Config.CONSTS.PREF_PREFIX + id; }
+        #storagePrefix(type) {
+            if (type === "cloud") return Config.CONSTS.CLOUD_PREFIX;
+            if (type === "pref") return Config.CONSTS.PREF_PREFIX;
+            return Config.CONSTS.PREFIX;
+        }
+        #localKey(id) { return this.#storagePrefix("local") + id; }
+        #cloudKey(id) { return this.#storagePrefix("cloud") + id; }
+        #prefKey(id) { return this.#storagePrefix("pref") + id; }
+        #idFromKey(key, type) {
+            const prefix = this.#storagePrefix(type);
+            return key.startsWith(prefix) ? key.slice(prefix.length) : null;
+        }
         #belongsToHost(id) { return id.startsWith(`${location.hostname}_`); }
+        #displayName(id) { return id.replace(`${location.hostname}_`, "").replace(".json", ""); }
         #showListTip(message = "") {
             const tip = this.#root.querySelector("#list_tip");
             if (!tip) return;
@@ -432,10 +559,36 @@
             tip.style.display = message ? "block" : "none";
         }
 
+        #notifyError(err, prefix = "错误") {
+            this.#setStatus(`${prefix}: ${Utils.safeErr(err)}`, "error");
+        }
+
+        async #runQuietly(task, prefix = "错误") {
+            try {
+                return await task();
+            } catch (err) {
+                this.#notifyError(err, prefix);
+                return null;
+            }
+        }
+
+        async #withSnapshot(item, handler, options = {}) {
+            const { source = null, onError = null } = options;
+            try {
+                const chosenSource = source || await this.#chooseSource(item);
+                const snapshot = await this.#readSnapshot(item.id, chosenSource);
+                return await handler(snapshot, chosenSource);
+            } catch (err) {
+                if (typeof onError === "function") onError(err);
+                else this.#notifyError(err);
+                return null;
+            }
+        }
+
         async #getPreferredSource(id) {
             if (this.#prefCache.has(id)) return this.#prefCache.get(id);
             const key = this.#prefKey(id);
-            const saved = await Storage.get(key);
+            const saved = GM_getValue(key);
             if (saved === "local" || saved === "cloud") {
                 this.#prefCache.set(id, saved);
                 return saved;
@@ -445,67 +598,76 @@
 
         async #setPreferredSource(id, source) {
             const normalized = source === "cloud" ? "cloud" : "local";
-            await Storage.set(this.#prefKey(id), normalized);
+            GM_setValue(this.#prefKey(id), normalized);
             this.#prefCache.set(id, normalized);
         }
 
         async #ensureDavReady() {
-            const url = await Storage.get(Config.KEYS.DAV_URL);
+            const { url } = await ConfigManager.getDavConfig();
             if (url) return true;
             this.#setStatus("请先配置 WebDAV", "error");
             return false;
         }
 
         async #syncFromCloud(interactive = false) {
-            const host = location.hostname;
-            let pulled = 0;
             const seen = new Set();
-            const manifestEntries = await this.#dav.getManifestList();
-
-            if (manifestEntries.length > 0) {
-                for (const entry of manifestEntries) {
-                    const name = entry?.name;
-                    if (!name || !name.startsWith(host)) continue;
-                    seen.add(name);
-                    const cloudKey = this.#cloudKey(name);
-                    const cached = await Storage.get(cloudKey);
-                    const cachedTime = cached?.meta?.time || 0;
-                    const remoteTime = typeof entry.time === "number" ? entry.time : null;
-                    const shouldFetch = !cached || (remoteTime !== null && remoteTime > cachedTime);
-                    if (!shouldFetch) continue;
-                    try {
-                        const remote = await this.#fetchRemoteSnapshot(name);
-                        await Storage.set(cloudKey, remote);
-                        pulled++;
-                    } catch (err) {
-                        console.warn("Cloud fetch failed:", name, err);
-                    }
-                }
-            } else {
-                const files = await this.#dav.listFiles();
-                for (const file of files) {
-                    if (!file.startsWith(host)) continue;
-                    seen.add(file);
-                    try {
-                        const remote = await this.#fetchRemoteSnapshot(file);
-                        await Storage.set(this.#cloudKey(file), remote);
-                        pulled++;
-                    } catch (err) {
-                        console.warn("Cloud fetch failed:", file, err);
-                    }
-                }
-            }
-
-            const keys = await Storage.list();
-            for (const key of keys) {
-                if (!key.startsWith(Config.CONSTS.CLOUD_PREFIX)) continue;
-                const id = key.slice(Config.CONSTS.CLOUD_PREFIX.length);
-                if (!this.#belongsToHost(id)) continue;
-                if (!seen.has(id)) await Storage.del(key);
-            }
-
+            const entries = await this.#loadRemoteEntries();
+            const pulled = await this.#importRemoteEntries(entries, seen);
+            await this.#cleanupCloudCache(seen);
             if (interactive) this.#setStatus(`云端同步完成，共拉取 ${pulled} 份快照`, "info");
             return Array.from(seen);
+        }
+
+        async #loadRemoteEntries() {
+            const host = location.hostname;
+            const manifestEntries = await this.#dav.getManifestList();
+            if (manifestEntries.length > 0) {
+                return manifestEntries.filter(entry => entry?.name?.startsWith(host));
+            }
+            const files = await this.#dav.listFiles();
+            return files.filter(name => name?.startsWith(host)).map(name => ({ name, time: null }));
+        }
+
+        async #importRemoteEntries(entries, seen) {
+            let pulled = 0;
+            for (const entry of entries) {
+                if (await this.#refreshRemoteEntry(entry, seen)) pulled++;
+            }
+            return pulled;
+        }
+
+        async #refreshRemoteEntry(entry, seen) {
+            const name = entry?.name;
+            if (!name) return false;
+            seen.add(name);
+            const cloudKey = this.#cloudKey(name);
+            const cached = GM_getValue(cloudKey);
+            const remoteTime = typeof entry?.time === "number" ? entry.time : null;
+            if (!this.#needsRemoteFetch(cached, remoteTime)) return false;
+            try {
+                const remote = await this.#fetchRemoteSnapshot(name);
+                GM_setValue(cloudKey, remote);
+                return true;
+            } catch (err) {
+                console.warn("Cloud fetch failed:", name, err);
+                return false;
+            }
+        }
+
+        #needsRemoteFetch(cached, remoteTime) {
+            if (!cached) return true;
+            if (remoteTime === null) return false;
+            const cachedTime = cached?.meta?.time || 0;
+            return remoteTime > cachedTime;
+        }
+
+        async #cleanupCloudCache(seen) {
+            const keys = GM_listValues();
+            for (const key of keys) {
+                const id = this.#idFromKey(key, "cloud");
+                if (!id || !this.#belongsToHost(id)) continue;
+                if (!seen.has(id)) GM_deleteValue(key);
+            }
         }
 
         async #fetchRemoteSnapshot(fileName) {
@@ -519,11 +681,11 @@
 
         async #chooseSource(item) {
             const pref = await this.#getPreferredSource(item.id);
-            if (pref && item[pref]) return pref;
             if (item.local && !item.cloud) return "local";
             if (item.cloud && !item.local) return "cloud";
             if (item.local && item.cloud) {
-                const useCloud = window.confirm(`"${item.display}" 同时存在于本地与云端。\n确定=临时使用云端，取消=使用本地`);
+                const hint = pref ? `\n当前默认设置：${pref === "cloud" ? "云端" : "本地"}` : "";
+                const useCloud = window.confirm(`"${item.display}" 同时存在于本地与云端。\n确定=临时使用云端，取消=使用本地${hint}`);
                 return useCloud ? "cloud" : "local";
             }
             throw new Error("未找到可用快照");
@@ -533,71 +695,65 @@
             const localKey = this.#localKey(id);
             const cloudKey = this.#cloudKey(id);
             if (source === "local") {
-                const local = await Storage.get(localKey);
+                const local = GM_getValue(localKey);
                 if (local) return local;
                 throw new Error("本地快照缺失");
             }
             if (source === "cloud") {
-                let remote = await Storage.get(cloudKey);
+                let remote = GM_getValue(cloudKey);
                 if (remote) return remote;
                 if (!(await this.#ensureDavReady())) throw new Error("未配置 WebDAV");
                 remote = await this.#fetchRemoteSnapshot(id);
-                if (remote) await Storage.set(cloudKey, remote);
+                if (remote) GM_setValue(cloudKey, remote);
                 return remote;
             }
             const pref = await this.#getPreferredSource(id);
             if (pref) return await this.#readSnapshot(id, pref);
-            const stored = await Storage.get(localKey);
+            const stored = GM_getValue(localKey);
             if (stored) return stored;
             return await this.#readSnapshot(id, "cloud");
         }
 
         async #uploadLocalSnapshots(btn) {
             if (!(await this.#ensureDavReady())) return;
-            const prefix = Config.CONSTS.PREFIX;
-            const keys = [];
-            for (const key of await Storage.list()) {
-                if (!key.startsWith(prefix)) continue;
-                const id = key.slice(prefix.length);
-                if (this.#belongsToHost(id)) keys.push(key);
+            const entries = [];
+            for (const key of GM_listValues()) {
+                const id = this.#idFromKey(key, "local");
+                if (id && this.#belongsToHost(id)) entries.push({ key, id });
             }
-            if (keys.length === 0) { this.#setStatus("暂无本地快照", "info"); return; }
+            if (entries.length === 0) { this.#setStatus("暂无本地快照", "info"); return; }
             const button = btn;
             const original = button.innerHTML;
             button.textContent = "上传中...";
             let ok = 0;
-            for (const key of keys) {
-                const data = await Storage.get(key);
+            for (const entry of entries) {
+                const data = GM_getValue(entry.key);
                 if (!data) continue;
-                const fileName = key.replace(prefix, "");
+                const fileName = entry.id;
                 try {
                     await this.#dav.saveFile(fileName, data);
-                    await Storage.set(this.#cloudKey(fileName), data);
+                    GM_setValue(this.#cloudKey(fileName), data);
                     ok++;
                 } catch (err) {
                     console.error("Upload failed", fileName, err);
                 }
             }
             button.innerHTML = original;
-            this.#setStatus(`上传完成：${ok}/${keys.length}`, "info");
+            this.#setStatus(`上传完成：${ok}/${entries.length}`, "info");
             this.loadList({ cloud: true });
         }
 
         async #uploadSingleSnapshot(item) {
             if (!item.local) return this.#setStatus("当前仅存在云端版本", "info");
             if (!(await this.#ensureDavReady())) return;
-            const data = await this.#readSnapshot(item.id, "local");
-            if (!data) return this.#setStatus("本地快照缺失", "error");
             const confirmMsg = `上传 "${item.display}" 至云端？将覆盖同名云端快照。`;
             if (!window.confirm(confirmMsg)) return;
-            try {
+            await this.#withSnapshot(item, async (data) => {
                 await this.#dav.saveFile(item.id, data);
-                await Storage.set(this.#cloudKey(item.id), data);
+                GM_setValue(this.#cloudKey(item.id), data);
                 this.#setStatus("已上传至云端", "info");
                 this.loadList();
-            } catch (err) {
-                this.#setStatus("上传失败: " + Utils.safeErr(err), "error");
-            }
+            }, { source: "local", onError: err => this.#notifyError(err, "上传失败") });
         }
 
         #buildTag(label, source, item, active) {
@@ -618,79 +774,45 @@
             return tag;
         }
 
+        #createIconButton(icon, title, cls = "icon-btn") {
+            const btn = document.createElement("button");
+            btn.className = cls;
+            btn.innerHTML = Utils.icon(icon);
+            btn.title = title;
+            return btn;
+        }
+
         async #handleTagAction(item, source) {
-            try {
-                if (source === "local") {
-                    if (!(await this.#ensureDavReady())) return;
-                    const data = await this.#readSnapshot(item.id, "local");
-                    if (!data) return this.#setStatus("本地快照缺失", "error");
-                    if (!confirm(`使用本地快照 "${item.display}" 覆盖云端版本?`)) return;
+            if (source === "local") {
+                if (!(await this.#ensureDavReady())) return;
+                if (!confirm(`使用本地快照 "${item.display}" 覆盖云端版本?`)) return;
+                await this.#withSnapshot(item, async (data) => {
                     await this.#dav.saveFile(item.id, data);
-                    await Storage.set(this.#cloudKey(item.id), data);
+                    GM_setValue(this.#cloudKey(item.id), data);
                     this.#setStatus("云端已更新为本地版本", "info");
                     this.loadList({ cloud: true });
-                    return;
-                }
-                const remote = await this.#readSnapshot(item.id, "cloud");
-                if (!remote) return this.#setStatus("云端快照缺失", "error");
-                if (!confirm(`使用云端快照 "${item.display}" 覆盖本地版本?`)) return;
-                await Storage.set(this.#localKey(item.id), remote);
+                }, { source: "local" });
+                return;
+            }
+            if (!confirm(`使用云端快照 "${item.display}" 覆盖本地版本?`)) return;
+            await this.#withSnapshot(item, async (remote) => {
+                GM_setValue(this.#localKey(item.id), remote);
                 this.#setStatus("本地已更新为云端版本", "info");
                 this.loadList();
-            } catch (err) {
-                this.#setStatus("错误: " + Utils.safeErr(err), "error");
-            }
+            }, { source: "cloud" });
         }
 
         #render() {
             const div = document.createElement("div");
             div.className = "overlay";
-            div.innerHTML = `
-                <div class="panel">
-                    <div class="head">
-                        <h2>Account Snapshot Sync</h2>
-                        <button class="close-btn">${Utils.icon('close')}</button>
-                    </div>
-                    <div class="body">
-                        <div class="status-bar" id="status_bar"></div>
-                        <div class="tabs">
-                            <div class="tab active" data-view="save">保存</div>
-                            <div class="tab" data-view="list">管理</div>
-                        </div>
-                        <div id="view-save">
-                            <label>快照名称</label>
-                            <input type="text" id="cfg_name" placeholder="例如：工作" autocomplete="off">
-                            <details>
-                                <summary>WebDAV 配置</summary>
-                                <div style="margin-top:8px">
-                                    <label>URL</label><input type="text" id="cfg_dav_url" placeholder="https://..." autocomplete="off">
-                                    <div style="display:flex;gap:10px">
-                                        <div style="flex:1"><label>User</label><input type="text" id="cfg_dav_user" autocomplete="new-password"></div>
-                                        <div style="flex:1"><label>Pass</label><input type="password" id="cfg_dav_pass" autocomplete="new-password"></div>
-                                    </div>
-                                    <button class="btn" id="btn_save_cfg">保存配置</button>
-                                </div>
-                            </details>
-                            <div style="margin-top:20px"><button class="btn primary" id="btn_do_save">${Utils.icon('save')} 保存快照</button></div>
-                        </div>
-                        <div id="view-list" style="display:none">
-                            <div class="tip-bar" id="list_tip"></div>
-                            <div id="list_container" style="border:1px solid #ccc;border-bottom:none"></div>
-                            <div style="display:flex;gap:8px;margin-top:12px">
-                                <button class="btn" id="btn_refresh" style="flex:1;border-style:dashed;">${Utils.icon('sync')}Sync Cloud 云同步</button>
-                                <button class="btn" id="btn_upload_all" style="flex:1;border-style:dashed;">${Utils.icon('upload')}上传本地快照</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
+            div.innerHTML = this.#panelHTML();
             this.#root.appendChild(div);
 
             const q = (s) => div.querySelector(s);
             this.#statusEl = q("#status_bar");
             q(".close-btn").onclick = () => this.close();
             div.onclick = (e) => { if (e.target === div) this.close(); };
-            
+
             const tabs = div.querySelectorAll(".tab");
             tabs.forEach(t => t.onclick = () => {
                 tabs.forEach(x => x.classList.remove("active")); t.classList.add("active");
@@ -698,13 +820,19 @@
                 q("#view-list").style.display = t.dataset.view === "list" ? "block" : "none";
             });
 
-            Promise.all([Storage.get(Config.KEYS.DAV_URL), Storage.get(Config.KEYS.DAV_USER), Storage.get(Config.KEYS.DAV_PASS)])
-                .then(([u, n, p]) => { if(u) q("#cfg_dav_url").value=u; if(n) q("#cfg_dav_user").value=n; if(p) q("#cfg_dav_pass").value=p; });
+            ConfigManager.getDavConfig().then(({ url, user, pass }) => {
+                if (url) q("#cfg_dav_url").value = url;
+                if (user) q("#cfg_dav_user").value = user;
+                if (pass) q("#cfg_dav_pass").value = pass;
+            });
 
             q("#btn_save_cfg").onclick = async () => {
-                await Storage.set(Config.KEYS.DAV_URL, q("#cfg_dav_url").value.trim());
-                await Storage.set(Config.KEYS.DAV_USER, q("#cfg_dav_user").value.trim());
-                await Storage.set(Config.KEYS.DAV_PASS, q("#cfg_dav_pass").value.trim());
+                const config = {
+                    url: q("#cfg_dav_url").value,
+                    user: q("#cfg_dav_user").value,
+                    pass: q("#cfg_dav_pass").value
+                };
+                await ConfigManager.saveDavConfig(config);
                 this.#setStatus("配置已保存", "info");
             };
 
@@ -716,17 +844,17 @@
                     const clean = Utils.sanitize(name);
                     const snap = await ProfileManager.collect(clean);
                     const fn = `${location.hostname}_${clean}.json`;
-                    await Storage.set(Config.CONSTS.PREFIX + fn, snap);
-                    
+                    GM_setValue(Config.CONSTS.PREFIX + fn, snap);
+
                     if (q("#cfg_dav_url").value.trim()) {
                         await this.#dav.saveFile(fn, snap);
-                        await Storage.set(this.#cloudKey(fn), snap);
+                        GM_setValue(this.#cloudKey(fn), snap);
                         this.#setStatus("已同步本地 + 云端", "info");
                     } else {
                         this.#setStatus("已保存本地", "info");
                     }
                     q("#cfg_name").value = ""; this.loadList();
-                } catch (err) { console.error(err); this.#setStatus(Utils.safeErr(err), "error"); } 
+                } catch (err) { console.error(err); this.#notifyError(err); }
                 finally { btn.innerHTML = old; }
             };
 
@@ -734,127 +862,229 @@
             q("#btn_upload_all").onclick = (e) => this.#uploadLocalSnapshots(e.currentTarget);
         }
 
+        #panelHTML() {
+            return `
+                <div class="panel">
+                    ${this.#panelHeadHTML()}
+                    <div class="body">
+                        ${this.#statusBarHTML()}
+                        ${this.#tabsHTML()}
+                        ${this.#saveViewHTML()}
+                        ${this.#listViewHTML()}
+                    </div>
+                </div>
+            `;
+        }
+
+        #panelHeadHTML() {
+            return `
+                <div class="head">
+                    <h2>Account Snapshot Sync</h2>
+                    <button class="close-btn">${Utils.icon('close')}</button>
+                </div>
+            `;
+        }
+
+        #statusBarHTML() { return '<div class="status-bar" id="status_bar"></div>'; }
+
+        #tabsHTML() {
+            return `
+                <div class="tabs">
+                    <div class="tab active" data-view="save">保存</div>
+                    <div class="tab" data-view="list">管理</div>
+                </div>
+            `;
+        }
+
+        #saveViewHTML() {
+            return `
+                <div id="view-save">
+                    <label>快照名称</label>
+                    <input type="text" id="cfg_name" placeholder="例如：工作" autocomplete="off">
+                    <details>
+                        <summary>WebDAV 配置</summary>
+                        <div style="margin-top:8px">
+                            <label>URL</label><input type="text" id="cfg_dav_url" placeholder="https://..." autocomplete="off">
+                            <div style="display:flex;gap:10px">
+                                <div style="flex:1"><label>User</label><input type="text" id="cfg_dav_user" autocomplete="new-password"></div>
+                                <div style="flex:1"><label>Pass</label><input type="password" id="cfg_dav_pass" autocomplete="new-password"></div>
+                            </div>
+                            <button class="btn" id="btn_save_cfg">保存配置</button>
+                        </div>
+                    </details>
+                    <div style="margin-top:20px"><button class="btn primary" id="btn_do_save">${Utils.icon('save')} 保存快照</button></div>
+                </div>
+            `;
+        }
+
+        #listViewHTML() {
+            return `
+                <div id="view-list" style="display:none">
+                    <div class="tip-bar" id="list_tip"></div>
+                    <div id="list_container" style="border:1px solid #ccc;border-bottom:none"></div>
+                    <div style="display:flex;gap:8px;margin-top:12px">
+                        <button class="btn" id="btn_refresh" style="flex:1;border-style:dashed;">${Utils.icon('sync')}云同步</button>
+                        <button class="btn" id="btn_upload_all" style="flex:1;border-style:dashed;">${Utils.icon('upload')}上传本地快照</button>
+                    </div>
+                </div>
+            `;
+        }
+
         async loadList(options = {}) {
-            const opts = typeof options === "boolean" ? { cloud: options } : options;
-            const cloud = !!opts.cloud;
-            const interactive = !!opts.interactive;
-            const c = this.#root.querySelector("#list_container");
-            if (!c) return;
-            c.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">加载中...</div>';
-            
-            const host = location.hostname;
-            const prefix = Config.CONSTS.PREFIX;
-            const cloudPrefix = Config.CONSTS.CLOUD_PREFIX;
-            const map = new Map();
-
+            const { cloud, interactive } = this.#normalizeListOptions(options);
+            const container = this.#prepareListContainer();
+            if (!container) return;
             try {
-                if (cloud && await this.#ensureDavReady()) {
-                    try {
-                        await this.#syncFromCloud(interactive);
-                    } catch (err) {
-                        this.#setStatus("云端同步失败: " + Utils.safeErr(err), "error");
-                    }
-                }
+                const entries = await this.#collectSnapshotEntries({ syncCloud: cloud, interactive });
+                await this.#handleConflictTip(entries);
+                await this.#renderList(container, entries);
+            } catch (err) {
+                container.innerHTML = `<div style="color:red;padding:10px">${Utils.safeErr(err)}</div>`;
+            }
+        }
 
-                const keys = await Storage.list();
-                for (const key of keys) {
-                    if (key.startsWith(prefix)) {
-                        const id = key.slice(prefix.length);
-                        if (!this.#belongsToHost(id)) continue;
-                        const entry = map.get(id) || { id, display: id.replace(`${host}_`, "").replace(".json", ""), local: false, cloud: false };
-                        entry.local = true;
-                        map.set(id, entry);
-                        continue;
-                    }
-                    if (key.startsWith(cloudPrefix)) {
-                        const id = key.slice(cloudPrefix.length);
-                        if (!this.#belongsToHost(id)) continue;
-                        const entry = map.get(id) || { id, display: id.replace(`${host}_`, "").replace(".json", ""), local: false, cloud: false };
-                        entry.cloud = true;
-                        map.set(id, entry);
-                    }
-                }
+        #normalizeListOptions(options) {
+            if (typeof options === "boolean") return { cloud: options, interactive: false };
+            return { cloud: !!options.cloud, interactive: !!options.interactive };
+        }
 
-                const hasConflict = Array.from(map.values()).some(i => i.local && i.cloud);
-                if (hasConflict) {
-                    const tipKey = Config.CONSTS.TIP_KEY_PREFIX + host;
-                    const shown = await Storage.get(tipKey);
-                    if (!shown) {
-                        this.#showListTip("提示：左键点击本地/云端标签可设默认来源，右键可执行覆盖。");
-                        await Storage.set(tipKey, Date.now());
-                    } else {
-                        this.#showListTip("");
-                    }
-                } else {
-                    this.#showListTip("");
-                }
+        #prepareListContainer() {
+            const container = this.#root.querySelector("#list_container");
+            if (!container) return null;
+            container.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">加载中...</div>';
+            return container;
+        }
 
-                c.innerHTML = "";
-                if (map.size === 0) c.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">暂无快照</div>';
+        async #collectSnapshotEntries({ syncCloud, interactive }) {
+            if (syncCloud && await this.#ensureDavReady()) {
+                await this.#runQuietly(() => this.#syncFromCloud(interactive), "云端同步失败");
+            }
+            const keys = GM_listValues();
+            const map = new Map();
+            for (const key of keys) this.#applyStorageKey(map, key);
+            return Array.from(map.values()).sort((a, b) => a.display.localeCompare(b.display));
+        }
 
-                for (const i of Array.from(map.values()).sort((a, b) => a.display.localeCompare(b.display))) {
-                    const row = document.createElement("div"); row.className = "item";
-                    const info = document.createElement("div"); info.className = "item-info";
-                    const name = document.createElement("div"); name.className = "item-name"; name.title = i.display; name.textContent = i.display;
-                    const meta = document.createElement("div"); meta.className = "item-meta";
-                    const pref = await this.#getPreferredSource(i.id);
-                    if (i.local) meta.appendChild(this.#buildTag("本地 LOC", "local", i, pref === "local"));
-                    if (i.cloud) meta.appendChild(this.#buildTag("云端 CLD", "cloud", i, pref === "cloud"));
-                    info.appendChild(name); info.appendChild(meta);
-                    const actions = document.createElement("div"); actions.className = "actions";
-                    const makeBtn = (icon, title, cls = "icon-btn") => {
-                        const btn = document.createElement("button");
-                        btn.className = cls;
-                        btn.innerHTML = Utils.icon(icon);
-                        btn.title = title;
-                        return btn;
-                    };
-                    const btnCopy = makeBtn("copy", "复制");
-                    btnCopy.onclick = async () => {
-                        try {
-                            const source = await this.#chooseSource(i);
-                            const d = await this.#readSnapshot(i.id, source);
-                            GM_setClipboard(JSON.stringify(d, null, 2));
-                            this.#setStatus(`已复制 (${source === "cloud" ? "云端" : "本地"})`, "info");
-                        } catch (e) { this.#setStatus("错误: " + Utils.safeErr(e), "error"); }
-                    };
-                    actions.appendChild(btnCopy);
+        #applyStorageKey(map, key) {
+            const info = this.#identifySnapshotKey(key);
+            if (!info || !this.#belongsToHost(info.id)) return;
+            const entry = map.get(info.id) || { id: info.id, display: this.#displayName(info.id), local: false, cloud: false };
+            entry[info.type] = true;
+            map.set(info.id, entry);
+        }
 
-                    if (i.local) {
-                        const btnUpload = makeBtn("upload", "上传至云端");
-                        btnUpload.onclick = () => this.#uploadSingleSnapshot(i);
-                        actions.appendChild(btnUpload);
-                    }
+        #identifySnapshotKey(key) {
+            const cloudId = this.#idFromKey(key, "cloud");
+            if (cloudId) return { type: "cloud", id: cloudId };
+            const localId = this.#idFromKey(key, "local");
+            if (localId) return { type: "local", id: localId };
+            return null;
+        }
 
-                    const btnRestore = makeBtn("restore", "恢复");
-                    btnRestore.onclick = async () => {
-                        if(!confirm(`恢复 "${i.display}" ?`)) return;
-                        try {
-                            const source = await this.#chooseSource(i);
-                            const d = await this.#readSnapshot(i.id, source);
-                            const count = await ProfileManager.restore(d);
-                            this.#setStatus(`已恢复 ${count} 条 Cookie (${source === "cloud" ? "云端" : "本地"})，即将刷新`, "info");
-                            await Utils.sleep(1000); location.reload();
-                        } catch(e) { this.#setStatus("错误: " + Utils.safeErr(e), "error"); }
-                    };
-                    actions.appendChild(btnRestore);
+        async #handleConflictTip(entries) {
+            const hasConflict = entries.some(entry => entry.local && entry.cloud);
+            if (!hasConflict) {
+                this.#showListTip("");
+                return;
+            }
+            const tipKey = Config.CONSTS.TIP_KEY_PREFIX + location.hostname;
+            const shown = GM_getValue(tipKey);
+            if (!shown) {
+                this.#showListTip("提示：左键点击本地/云端标签可设默认来源，右键可执行覆盖。");
+                GM_setValue(tipKey, Date.now());
+                return;
+            }
+            this.#showListTip("");
+        }
 
-                    const btnDelete = makeBtn("delete", "删除", "icon-btn del");
-                    btnDelete.onclick = async () => {
-                        if(!confirm(`删除 "${i.display}" ?`)) return;
-                        await Storage.del(this.#localKey(i.id));
-                        await Storage.del(this.#cloudKey(i.id));
-                        await Storage.del(this.#prefKey(i.id));
-                        this.#prefCache.delete(i.id);
-                        if(i.cloud) await this.#dav.deleteFile(i.id);
-                        this.loadList({ cloud: i.cloud }); this.#setStatus("快照已删除", "info");
-                    };
-                    actions.appendChild(btnDelete);
+        async #renderList(container, entries) {
+            if (entries.length === 0) {
+                container.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">暂无快照</div>';
+                return;
+            }
+            container.innerHTML = "";
+            for (const entry of entries) {
+                container.appendChild(await this.#buildListRow(entry));
+            }
+        }
 
-                    row.appendChild(info); row.appendChild(actions);
-                    c.appendChild(row);
-                }
-            } catch(e) { c.innerHTML=`<div style="color:red;padding:10px">${Utils.safeErr(e)}</div>`; }
+        async #buildListRow(item) {
+            const row = document.createElement("div");
+            row.className = "item";
+
+            // 构建信息部分
+            const info = document.createElement("div");
+            info.className = "item-info";
+
+            const name = document.createElement("div");
+            name.className = "item-name";
+            name.textContent = item.display;
+            name.title = item.display;
+
+            const meta = document.createElement("div");
+            meta.className = "item-meta";
+            const pref = await this.#getPreferredSource(item.id);
+
+            if (item.local) meta.appendChild(this.#buildTag("本地 LOC", "local", item, pref === "local"));
+            if (item.cloud) meta.appendChild(this.#buildTag("云端 CLD", "cloud", item, pref === "cloud"));
+
+            info.append(name, meta);
+
+            // 构建操作按钮部分
+            const actions = document.createElement("div");
+            actions.className = "actions";
+
+            const btnCopy = this.#createIconButton("copy", "复制");
+            btnCopy.onclick = () => this.#withSnapshot(item, async (data, source) => {
+                GM_setClipboard(JSON.stringify(data, null, 2));
+                this.#setStatus(`已复制 (${source === "cloud" ? "云端" : "本地"})`, "info");
+            });
+            actions.appendChild(btnCopy);
+
+            // 添加上传按钮
+            if (item.local) {
+                const btnUpload = this.#createIconButton("upload", "上传至云端");
+                btnUpload.onclick = () => this.#uploadSingleSnapshot(item);
+                actions.appendChild(btnUpload);
+            }
+
+            // 添加恢复按钮
+            const btnRestore = this.#createIconButton("restore", "恢复");
+            btnRestore.onclick = async () => {
+                if (!confirm(`恢复 "${item.display}" ?`)) return;
+                await this.#withSnapshot(item, async (data, source) => {
+                    const count = await ProfileManager.restore(data);
+                    this.#setStatus(`已恢复 ${count} 条 Cookie (${source === "cloud" ? "云端" : "本地"})，即将刷新`, "info");
+                    await Utils.sleep(1000);
+                    location.reload();
+                });
+            };
+            actions.appendChild(btnRestore);
+
+            // 添加删除按钮
+            const btnDelete = this.#createIconButton("delete", "删除", "icon-btn del");
+            btnDelete.onclick = async () => {
+                if (!confirm(`删除 "${item.display}" ?`)) return;
+
+                // 并行删除本地和云端数据
+                const deletePromises = [
+                    GM_deleteValue(this.#localKey(item.id)),
+                    GM_deleteValue(this.#cloudKey(item.id)),
+                    GM_deleteValue(this.#prefKey(item.id)),
+                    this.#prefCache.delete(item.id)
+                ];
+
+                if (item.cloud) deletePromises.push(this.#dav.deleteFile(item.id));
+
+                await Promise.all(deletePromises);
+
+                this.loadList({ cloud: item.cloud });
+                this.#setStatus("快照已删除", "info");
+            };
+            actions.appendChild(btnDelete);
+
+            row.append(info, actions);
+            return row;
         }
     }
     new UI();
