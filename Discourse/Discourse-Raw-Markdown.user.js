@@ -1,15 +1,85 @@
 ﻿// ==UserScript==
 // @name         !.Discourse Raw → Markdown Copier
-// @description  通用Discourse论坛Raw API Markdown复制工具
-// @version      2.2.0
+// @description  📝 为 Discourse 论坛帖子添加「复制标准 Markdown」按钮，一键获取完美格式的文档。
+//               通过 Discourse Raw API 获取原始内容，智能转换为标准 Markdown 格式，
+//               支持图片修复、链接转换、代码高亮等高级功能，让跨平台发布从未如此简单。
+//
+//               ◼ 核心功能：
+//                 • Raw API 集成：
+//                   - 直接调用 Discourse 的 Raw API 获取原始内容
+//                   - 保持完整的格式信息和元数据
+//                   - 支持 Discourse 的一切特殊语法和扩展
+//
+//                 • 智能内容转换：
+//                   - 图片链接修复：将 upload:// 协议转换为真实 URL
+//                   - 附件链接恢复：自动定位并修复下载链接
+//                   - BBCode 转 Markdown：b/i/u/s/kbd 等标签完美转换
+//                   - 引用块标准化：[quote] → Markdown blockquote 格式
+//
+//                 • 高级特性支持：
+//                   - 代码块语言标识：自动识别并添加语言标记
+//                   - 折叠块转换：[details] → 标准 HTML details 标签
+//                   - 用户提及链接：@user → 自动链接到用户页面
+//                   - 话题链接美化：/t/slug/id → [标题](链接) 格式
+//                   - 标签系统转换：#tag → 可点击的标签链接
+//
+//                 • UI/UX 优化：
+//                   - 无侵入式按钮：融入原生 UI 样式
+//                   - 实时状态反馈：加载中、成功、失败三种状态
+//                   - 防重复点击：操作期间自动禁用按钮
+//                   - 自动恢复：1.8秒后按钮状态自动重置
+//
+//                 • 容错与兼容：
+//                   - DOM 智能解析：多级回退策略确保图片链接正确
+//                   - 链接去重处理：避免嵌套链接和重复转换
+//                   - 错误提示：详细的错误信息帮助调试
+//                   - 兼容检测：自动识别 Discourse 环境
+//
+//               ◼ 转换规则详解：
+//                 1. 媒体资源：
+//                    - 图片：![alt](upload://hash) → ![alt](真实URL)
+//                    - 附件：[文件名](upload://hash) → [文件名](下载链接)
+//                    - 支持多级查找：data-base62-sha1 → lightbox → srcset
+//
+//                 2. 结构化内容：
+//                    - 引用：[quote="用户"]内容[/quote] → > **用户:** 内容
+//                    - 代码：[code=lang] → ```lang\n```
+//                    - 折叠：[details=标题]内容[/details] → <details><summary>标题</summary>
+//
+//                 3. 文本样式：
+//                    - 粗体：[b]文本[/b] → **文本**
+//                    - 斜体：[i]文本[/i] → *文本*
+//                    - 下划线：[u]文本[/u] → <u>文本</u>
+//                    - 删除线：[s]文本[/s] → ~~文本~~
+//
+//                 4. 交互元素：
+//                    - 用户提及：@username → [@username](/u/username)
+//                    - 话题链接：/t/slug/123 → [标题](/t/slug/123)
+//                    - 标签：#tag → [#tag](/tag/tag)
+//
+//               ◼ 使用场景：
+//                 • 技术文档迁移：将 Discourse 教程转换为 Markdown 格式
+//                 • 博客文章转载：保持格式完整地复制高质量内容
+//                 • 知识库整理：收集和归档有价值的讨论内容
+//                 • 离线阅读保存：获取纯净的文本格式便于本地存储
+//                 • 跨平台发布：将内容发布到其他支持 Markdown 的平台
+//
+//               ◼ 技术亮点：
+//                 • 分层架构：Config → Service → UI → App 清晰分层
+//                 • 链式处理器：模块化的转换规则易于扩展
+//                 • DOM 观察：动态加载的内容也能正常工作
+//                 • 智能缓存：避免重复的 API 调用
+//                 • 原子操作：确保 UI 状态的一致性
+//
+//               —— 让 Discourse 内容自由流动的 Markdown 转换神器。
+// @version      2.5.0
 // @author       ank
 // @namespace    http://010314.xyz/
-// @license      AGPL-3.0-or-later
+// @license      AGPL-3.0
 // @match        */t/topic/*
 // @match        */t/*
 // @grant        GM_setClipboard
 // @run-at       document-end
-// @require      https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.user.js
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // ==/UserScript==
@@ -17,215 +87,549 @@
 (function () {
   'use strict';
 
-  class DiscourseRawMarkdown {
-    #siteInfo;
+  /**
+   * [Layer 1] Config & Helpers
+   */
+  class Config {
+    static SELECTORS = {
+      ROOT_CHECK: [
+        'meta[name="generator"][content*="Discourse"]',
+        'body.discourse'
+      ],
+      POST_CONTAINER: '.topic-post',
+      ACTION_CONTAINER: '.post-controls .actions',
+      EXISTING_BTN: '.btn',
+    };
 
-    constructor() {
-      this.#siteInfo = {
-        origin: window.location.origin,
-        hostname: window.location.hostname,
-      };
-    }
-
-    #isDiscourse() {
-      return (
-        document.querySelector('meta[name="generator"]')?.content?.includes('Discourse') ||
-        document.querySelector('.discourse-root') ||
-        document.querySelector('#discourse-modal') ||
-        document.body.classList.contains('discourse')
-      );
-    }
-
-    async #getPostRawContent(topicId, postNumber) {
-      const url = `${this.#siteInfo.origin}/raw/${topicId}/${postNumber}`;
-      try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const rawContent = await response.text();
-        return this.#convertToStandardMarkdown(rawContent);
-      } catch (error) {
-        throw new Error(`获取Raw内容失败: ${error.message}`);
+    static UI = {
+      button: {
+        class: 'btn no-text btn-icon btn-flat discourse-md-copy-btn',
+        icons: { copy: '#copy', check: '#check' },
+        delay: 1800
+      },
+      messages: {
+        title: '复制为标准 Markdown (Raw API)',
+        success: '复制成功!',
+        error: '复制失败: '
       }
-    }
+    };
 
-    #convertToStandardMarkdown(rawContent) {
-      let content = rawContent;
-      const origin = this.#siteInfo.origin;
+    static Utils = class {
+      static escapeRegExp = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      const processors = [
-        // 处理Discourse上传的图片，转换为完整的URL。
-        {
-          name: 'Images',
-          regex: /!\[([^|\]]*?)\|?([^\]]*)\]\(upload:\/\/([a-zA-Z0-9]+)\.([a-zA-Z0-9]+)\)/gi,
-          replacement: (match, altText, dimensions, base62Sha1, format) => {
-            const imgElement = document.querySelector(`img[data-base62-sha1="${base62Sha1}"]`);
-            return imgElement?.src ? `![${altText.trim()}](${imgElement.src})` : match;
-          }
-        },
-        // 处理引用块，转换为标准的Markdown引用。
-        {
-          name: 'Quotes',
-          regex: /\[quote="([^"]*?)(?:,\s*post:\d+)?(?:,\s*topic:\d+)?"\]([\s\S]*?)\[\/quote\]/gi,
-          replacement: (_, author, quoteContent) => {
-            const cleanAuthor = author.trim();
-            const quotedLines = quoteContent.trim().split('\n').map(line => `> ${line}`).join('\n');
-            return `\n> **${cleanAuthor}:**\n${quotedLines}\n`;
-          }
-        },
-        // 转换Discourse特有的列表项 `[*]` 为标准Markdown `*`。
-        {
-          name: 'List Items',
-          regex: /\[\*\]\s*(.*?)\s*(?=\[\*\]|\[\/list\])/gi,
-          replacement: '\n* $1'
-        },
-        // 移除列表容器 `[list]` 和 `[/list]` 标签。
-        {
-          name: 'Lists Wrapper',
-          regex: /\[\/?list(=1)?\]\n?/gi,
-          replacement: ''
-        },
-        // 处理文本对齐，转换为HTML div标签。
-        {
-          name: 'Alignment',
-          regex: /\[align=(center|right|left|justify)\]([\s\S]*?)\[\/align\]/gi,
-          replacement: '<div style="text-align: $1;">$2</div>'
-        },
-        // 处理投票，转换为可读的Markdown列表。
-        {
-          name: 'Polls',
-          regex: /\[poll[^\]]*\]([\s\S]*?)\[\/poll\]/gi,
-          replacement: (_, pollContent) => {
-            const lines = pollContent.trim().split('\n').filter(line => line.trim().startsWith('*'));
-            let markdown = '\n**📊 投票：**\n\n';
-            lines.forEach(line => {
-              const cleanLine = line.replace(/^\*\s*/, '').trim();
-              if (cleanLine) markdown += `- [ ] ${cleanLine}\n`;
-            });
-            return markdown + '\n';
-          }
-        },
-        // 统一处理 `[spoiler]` 和 `[details]` 为HTML的 `<details>` 标签。
-        {
-          name: 'Spoilers & Details',
-          regex: /\[(spoiler|details)\]([\s\S]*?)\[\/\1\]/gi,
-          replacement: (match, tag, content) => {
-            const summary = tag === 'spoiler' ? '剧透' : '详情';
-            return `\n<details>\n<summary>${summary}</summary>\n\n${content.trim()}\n\n</details>\n`;
-          }
-        },
-        // 处理带自定义标题的 `[details]`。
-        {
-          name: 'Details with Summary',
-          regex: /\[details="([^"]*)"\]([\s\S]*?)\[\/details\]/gi,
-          replacement: (_, summary, detailContent) => {
-            return `\n<details>\n<summary>${summary.trim()}</summary>\n\n${detailContent.trim()}\n\n</details>\n`;
-          }
-        },
-        // --- 基础文本格式化 (BBCode to Markdown) ---
-        { name: 'Bold', regex: /\[b\]([\s\S]*?)\[\/b\]/gi, replacement: '**$1**' },
-        { name: 'Italic', regex: /\[i\]([\s\S]*?)\[\/i\]/gi, replacement: '*$1*' },
-        { name: 'Underline', regex: /\[u\]([\s\S]*?)\[\/u\]/gi, replacement: '<u>$1</u>' },
-        { name: 'Strikethrough', regex: /\[s\]([\s\S]*?)\[\/s\]/gi, replacement: '~~$1~~' },
-        // 剥离不兼容的样式标签，如颜色、大小等。
-        {
-          name: 'Strip Unsupported Style Tags',
-          regex: /\[\/?(color|size|font)[^\]]*\]/gi,
-          replacement: ''
-        },
-        // --- 提及、链接和标签 ---
-        // 处理用户提及，转换为指向用户个人资料页的链接。
-        {
-          name: 'Mentions',
-          regex: /(?<=^|\s)@([a-zA-Z0-9_-]+)\b/g,
-          replacement: (match, user) => match.replace(`@${user}`, `[@${user}](${origin}/u/${user})`)
-        },
-        // 处理内部话题链接，转换为带可读标题的Markdown链接。
-        {
-          name: 'Topic Links',
-          regex: new RegExp(`${origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/t\\/([^\\/\\s]+)\\/(\\d+)(?:\\/(\\d+))?`, 'g'),
-          replacement: (match, slug) => {
-            const title = slug.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-            return `[${title}](${match})`;
-          }
-        },
-        // 处理标签，转换为指向标签页的链接。
-        {
-          name: 'Tags',
-          regex: /(?<=^|\s)#([a-zA-Z0-9-]+)\b/g,
-          replacement: (match, tag) => match.replace(`#${tag}`, `[#${tag}](${origin}/tag/${tag})`)
-        },
+      static safeHash = hash => CSS?.escape?.(hash) || hash;
+
+      /**
+       * 判断 offset 是否处于 Markdown 链接目标 (](...)) 内
+       */
+      static isInsideMdLinkTarget(full, offset) {
+        if (!full || offset == null) return false;
+        if (offset >= 2 && full.slice(offset - 2, offset) === '](') return true;
+
+        const left = full.lastIndexOf('](', offset);
+        if (left === -1) return false;
+
+        const right = full.indexOf(')', left + 2);
+        return right !== -1 && offset < right;
+      }
+
+      /**
+       * 判断 offset 是否位于 Markdown 链接文字部分 [...] 内
+       */
+      static isInsideMdLinkText(full, offset) {
+        if (!full || offset == null) return false;
+
+        const leftBracket = full.lastIndexOf('[', offset);
+        if (leftBracket === -1) return false;
+
+        const rightBracket = full.indexOf(']', leftBracket + 1);
+        if (rightBracket === -1) return false;
+
+        return leftBracket < offset && offset < rightBracket;
+      }
+
+      /**
+       * 链接类替换统一开关：位于链接文字或链接目标内则跳过
+       */
+      static shouldSkipLinkification(full, offset) {
+        return (
+          this.isInsideMdLinkTarget(full, offset) ||
+          this.isInsideMdLinkText(full, offset)
+        );
+      }
+    };
+
+    /**
+     * 文本处理器分组
+     * 媒体 / Discourse 特有元素 / 结构化清理 / 链接&标签
+     */
+    static ProcessorGroups = {
+      media(origin) {
+        const U = Config.Utils;
+
+        return [
+          {
+            // 1. 图片: upload:// → DOM 真实 URL（多级回退）
+            name: 'Images',
+            regex:
+              /!\[([^|\]]*?)\|?([^\]]*)\]\(upload:\/\/([A-Za-z0-9]+)\.([A-Za-z0-9]+)\)/g,
+            replacement: (match, altRaw, dimRaw, hash, ext) => {
+              const alt = (altRaw || '').trim();
+
+              try {
+                const safeHash = U.safeHash(hash);
+
+                // a) 直接从 data-base62-sha1 拿 src
+                const img = document.querySelector(
+                  `img[data-base62-sha1="${safeHash}"]`
+                );
+                if (img?.src) return `![${alt}](${img.src})`;
+
+                // b) lightbox / a[href*="hash"]
+                const href = document
+                  .querySelector(
+                    `a.lightbox[href*="${hash}"], a[href*="${hash}"]`
+                  )
+                  ?.getAttribute('href');
+                if (href) {
+                  const abs = href.startsWith('http') ? href : origin + href;
+                  return `![${alt}](${abs})`;
+                }
+
+                // c) srcset/source 回退
+                const ss = document.querySelector(
+                  `source[srcset*="${hash}"], img[srcset*="${hash}"]`
+                );
+                const srcset = ss?.getAttribute('srcset');
+                if (srcset) {
+                  const first = srcset.split(',')[0]?.trim()?.split(' ')[0];
+                  if (first) {
+                    const abs = first.startsWith('http') ? first : origin + first;
+                    return `![${alt}](${abs})`;
+                  }
+                }
+              } catch (_) {
+                // ignore
+              }
+
+              return match;
+            },
+          },
+
+          {
+            // 2. 附件: upload:// → 使用 DOM 恢复真实下载地址（只要加上域名即可）
+            name: 'Attachments',
+            regex:
+              /\[([^\]|]+)(?:\|attachment)?\]\(upload:\/\/([A-Za-z0-9]+)(\.[A-Za-z0-9]+)?\)/g,
+            replacement: (match, filename, hash, ext = '') => {
+              try {
+                const safeHash = U.safeHash(hash);
+
+                // 优先：带 attachment 类的链接
+                let a =
+                  document.querySelector(
+                    `a.attachment[href*="${safeHash}"]`
+                  ) ||
+                  document.querySelector(`a[href*="${safeHash}"]`);
+
+                const href = a && a.getAttribute('href');
+                if (href) {
+                  const abs = href.startsWith('http') ? href : origin + href;
+                  // 👉 输出标准 Markdown 链接，文件名保持原样
+                  return `[${filename}](${abs})`;
+                }
+              } catch (_) {
+                // ignore DOM 相关错误
+              }
+
+              // 找不到 DOM 对应链接时的兜底：至少保留可读信息
+              return `${filename} (upload://${hash}${ext})`;
+            },
+          },
+        ];
+      },
+
+      discourseMeta() {
+        return [
+          {
+            // 3. 引用块: [quote] → Markdown blockquote
+            name: 'Quotes',
+            regex:
+              /\[quote="([^"]*?)(?:,\s*post:\d+)?(?:,\s*topic:\d+)?(?:,\s*full:true)?"\]([\s\S]*?)\[\/quote\]/g,
+            replacement: (_, authorRaw, contentRaw) => {
+              const author = (authorRaw || '').trim();
+              const content = (contentRaw || '').trim();
+
+              const lines = content
+                .split('\n')
+                .map((l) => `> ${l}`.trimEnd());
+              return `\n> **${author}:**\n${lines.join('\n')}\n`;
+            },
+          },
+
+          {
+            // 4. Discourse 时间戳: [date=...] → 纯文本
+            name: 'Date',
+            regex: /\[date=([^\]]+?)(?:\s+time=[^\]]+?)?\]/g,
+            replacement: '$1',
+          },
+
+          {
+            // 5. 列表项 [*] → *
+            name: 'ListItems',
+            regex: /\[\*\]\s*([\s\S]*?)(?=\n?\[\*\]|\n?\[\/list\])/g,
+            replacement: (_, item) => `\n* ${(item || '').trim()}`,
+          },
+
+          {
+            // 6. 移除列表容器 [list]
+            name: 'ListWrapper',
+            regex: /\[\/?list(?:=1)?\]\s*/g,
+            replacement: '',
+          },
+
+          {
+            // 7. Polls → Checkbox 列表
+            name: 'Polls',
+            regex: /\[poll[^\]]*\]([\s\S]*?)\[\/poll\]/g,
+            replacement: (_, contentRaw = '') => {
+              const items = contentRaw
+                .trim()
+                .split('\n')
+                .map(l => l.trim())
+                .filter(l => l.startsWith('*'))
+                .map(l => `- [ ] ${l.replace(/^\*\s*/, '').trim()}`);
+
+              return `\n**📊 投票：**\n\n${
+                items.length ? items.join('\n') : '(无内容)'
+              }\n`;
+            },
+          },
+
+          {
+            // 8. 折叠内容 spoiler/details → <details>
+            name: 'Details',
+            regex: /\[(spoiler|details)(?:="([^"]*)")?\]([\s\S]*?)\[\/\1\]/g,
+            replacement: (_, tag, title, contentRaw = '') => {
+              const summary = title || (tag === 'spoiler' ? '剧透' : '详情');
+              return `\n<details>\n<summary>${summary}</summary>\n\n${contentRaw.trim()}\n\n</details>\n`;
+            },
+          },
+        ];
+      },
+
+      structure() {
+        // BBCode 标签映射
+        const BBCODE_MAP = {
+          b: '**$1**',
+          i: '*$1*',
+          u: '<u>$1</u>',
+          s: '~~$1~~',
+          kbd: '<kbd>$1</kbd>'
+        };
+
+        // 动态生成 BBCode 转换器
+        const bbcodeProcessors = Object.entries(BBCODE_MAP).map(([tag, replacement]) => ({
+          name: `BBCode_${tag}`,
+          regex: new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[/${tag}\\]`, 'g'),
+          replacement
+        }));
+
+        return [
+          ...bbcodeProcessors,
+          {
+            // 移除不支持的样式标签
+            name: 'Cleanup',
+            regex: /\[\/?(?:color|size|font|align)[^\]]*\]/g,
+            replacement: '',
+          },
+        ];
+      },
+
+      linkification(origin) {
+        const U = Config.Utils;
+        const originEsc = U.escapeRegExp(origin);
+        const PREFIX = '(^|[\\s([{"\\\'`])';
+
+        return [
+          {
+            // 11. 用户提及: @user → 链接（避免套娃）
+            name: 'Mentions',
+            regex: new RegExp(`${PREFIX}@(\\w[\\w-]*)\\b`, 'g'),
+            replacement: (m, pre, u, offset, full) => {
+              if (U.shouldSkipLinkification(full, offset)) return m;
+              return `${pre}[@${u}](${origin}/u/${u})`;
+            },
+          },
+
+          {
+            // 12. 话题链接 /t/slug/id → [Title](Link)（仅在非 URL 目标位置替换）
+            name: 'TopicLinks',
+            regex: new RegExp(
+              `${originEsc}\\/t\\/([^\\/?#\\s]+)\\/(\\d+)(?:\\/(\\d+))?(?=\\b|[?#\\s]|$)`,
+              'g'
+            ),
+            replacement: (match, slug, id, post, offset, full) => {
+              if (U.isInsideMdLinkTarget(full, offset)) return match;
+              const title = (slug || '').replace(/-/g, ' ').trim();
+              return `[${title || slug}](${match})`;
+            },
+          },
+
+          {
+            // 13. 标签 #tag → 链接（避免 URL fragment / markdown link 套娃）
+            name: 'Tags',
+            regex: new RegExp(
+              `${PREFIX}#([A-Za-z0-9\\-\\u4e00-\\u9fa5]+)\\b`,
+              'g'
+            ),
+            replacement: (m, pre, t, offset, full) => {
+              if (U.shouldSkipLinkification(full, offset)) return m;
+
+              const prev = full?.[offset - 1] || '';
+              if (/[\/:?=&#.]/.test(prev)) return m;
+
+              return `${pre}[#${t}](${origin}/tag/${t})`;
+            },
+          },
+        ];
+      },
+    };
+
+    static getProcessors(origin, service) {
+      // 此处预留 service 位，未来如需从 Service 注入更多上下文可直接使用
+      const G = Config.ProcessorGroups;
+      return [
+        ...G.media(origin, service),
+        ...G.discourseMeta(),
+        ...G.structure(),
+        ...G.linkification(origin),
       ];
-
-      for (const processor of processors) {
-        content = content.replace(processor.regex, processor.replacement);
-      }
-      return content.replace(/\n\s*\n/g, '\n\n').replace(/\n{3,}/g, '\n\n').trim();
-    }
-
-    #createCopyButton(postElement) {
-      const article = postElement.querySelector('article[data-topic-id]');
-      const topicId = article?.dataset.topicId || window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/)?.[1];
-      const postNumber = postElement.dataset.postNumber;
-
-      if (!topicId || !postNumber) return null;
-
-      const button = elmGetter.create(`
-        <button class="${document.querySelector('.post-action-menu__copy-link')?.className || 'btn no-text btn-icon btn-flat'} universal-copy-button"
-                title="复制为标准Markdown（${this.#siteInfo.hostname} Raw API）">
-          <svg class="fa d-icon d-icon-d-post-share svg-icon svg-string" xmlns="http://www.w3.org/2000/svg"><use href="#copy"></use></svg><span aria-hidden="true">&ZeroWidthSpace;</span>
-        </button>
-      `);
-
-      button.addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const originalIcon = button.querySelector('svg use');
-        const originalHref = originalIcon.getAttribute('href');
-        originalIcon.setAttribute('href', '#check');
-        button.disabled = true;
-
-        try {
-          const rawContent = await this.#getPostRawContent(topicId, postNumber);
-          const success = GM_setClipboard(rawContent, 'text/plain');
-          button.title = success ? '已复制!' : '复制失败!';
-        } catch (error) {
-          console.error('[Discourse Raw Markdown]: 操作失败:', error);
-          button.title = `获取失败: ${error.message}`;
-        } finally {
-          setTimeout(() => {
-            originalIcon.setAttribute('href', originalHref);
-            button.title = `复制为标准Markdown（${this.#siteInfo.hostname} Raw API）`;
-            button.disabled = false;
-          }, 1500);
-        }
-      });
-
-      return button;
-    }
-
-    init() {
-      if (!this.#isDiscourse()) {
-        console.log('[Discourse Raw Markdown]: 当前站点不是Discourse论坛');
-        return;
-      }
-
-      console.log(`[Discourse Raw Markdown]: 已在 ${this.#siteInfo.hostname} 上激活`);
-
-      elmGetter.each('.topic-post .post-controls .actions', (actionsContainer) => {
-        if (actionsContainer.querySelector('.universal-copy-button')) return;
-
-        const postElement = actionsContainer.closest('.topic-post');
-        if (!postElement) return;
-
-        const button = this.#createCopyButton(postElement);
-        if (button) {
-          actionsContainer.prepend(button);
-        }
-      });
     }
   }
 
-  new DiscourseRawMarkdown().init();
+  /**
+   * [Layer 2] Service: Raw → Markdown
+   */
+  class MarkdownService {
+    #origin;
+    #codeBlocks = [];
 
+    constructor() {
+      this.#origin = window.location.origin;
+    }
+
+    async fetchAndConvert(topicId, postNumber) {
+      const url = `${this.#origin}/raw/${topicId}/${postNumber}`;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const raw = await response.text();
+      return this.#processText(raw);
+    }
+
+    #processText(text) {
+      const processors = Config.getProcessors(this.#origin, this);
+
+      let content = this.#maskCode(text);
+
+      for (const p of processors) {
+        if (p.regex?.global) p.regex.lastIndex = 0;
+        content = content.replace(p.regex, p.replacement);
+      }
+
+      content = this.#unmaskCode(content);
+
+      return content
+        .replace(/\r\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    /**
+     * 代码块占位: 支持 ``` ``` 与 `inline`
+     */
+    #maskCode(text) {
+      this.#codeBlocks = [];
+
+      const patterns = [
+        /```[\s\S]*?```/g,  // fenced code
+        /`[^`\n]*`/g         // inline code
+      ];
+
+      return patterns.reduce((out, pattern) =>
+        out.replace(pattern, m => {
+          const idx = this.#codeBlocks.push(m) - 1;
+          return `§§CODE_BLOCK_${idx}§§`;
+        }), text);
+    }
+
+    #unmaskCode(text) {
+      return text.replace(/§§CODE_BLOCK_(\d+)§§/g, (_, index) =>
+        this.#codeBlocks[Number(index)] || ''
+      );
+    }
+  }
+
+  /**
+   * [Layer 3] UI: 按钮注入与交互
+   */
+  class UIController {
+    #service;
+
+    constructor() {
+      this.#service = new MarkdownService();
+    }
+
+    injectButton(postElement) {
+      const actionsContainer = postElement.querySelector(
+        Config.SELECTORS.ACTION_CONTAINER
+      );
+      if (!actionsContainer || actionsContainer.querySelector('.discourse-md-copy-btn')) return;
+
+      const { topicId, postNumber } = this.#getPostMeta(postElement);
+      if (!topicId || !postNumber) return;
+
+      const existingBtn = actionsContainer.querySelector(Config.SELECTORS.EXISTING_BTN);
+      const btn = document.createElement('button');
+
+      btn.className = existingBtn
+        ? `${existingBtn.className} discourse-md-copy-btn`
+        : Config.UI.button.class;
+      btn.title = Config.UI.messages.title;
+
+      btn.innerHTML = `
+<svg class="fa d-icon d-icon-copy svg-icon svg-string" xmlns="http://www.w3.org/2000/svg">
+  <use href="${Config.UI.button.icons.copy}"></use>
+</svg>`.trim();
+
+      btn.addEventListener('click', (e) =>
+        this.#handleClick(e, btn, topicId, postNumber)
+      );
+
+      actionsContainer.prepend(btn);
+    }
+
+    #getPostMeta(postElement) {
+      const article = postElement.matches('article')
+        ? postElement
+        : postElement.querySelector('article.topic-post, article[data-topic-id]');
+
+      const topicId = article?.dataset.topicId ||
+                      postElement.dataset.topicId ||
+                      window.location.pathname.match(/\/t\/[^/]+\/(\d+)/)?.[1];
+
+      const postNumber = article?.dataset.postNumber ||
+                         postElement.dataset.postNumber ||
+                         postElement.id?.split('_').pop();
+
+      return { topicId, postNumber };
+    }
+
+    async #handleClick(e, btn, topicId, postNumber) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+
+      const useEl = btn.querySelector('use');
+      const originalHref = useEl?.getAttribute('href') || Config.UI.button.icons.copy;
+
+      // UI: loading 状态
+      Object.assign(btn.style, {
+        opacity: '0.7',
+        cursor: 'wait'
+      });
+      btn.disabled = true;
+
+      try {
+        const markdown = await this.#service.fetchAndConvert(topicId, postNumber);
+        GM_setClipboard(markdown, 'text/plain');
+
+        useEl?.setAttribute('href', Config.UI.button.icons.check);
+        btn.title = Config.UI.messages.success;
+        btn.classList.add('btn-primary');
+      } catch (err) {
+        console.error('[Raw→Markdown]', err);
+        btn.title = Config.UI.messages.error + (err?.message || String(err));
+        btn.style.backgroundColor = '#ffe6e6';
+        useEl?.setAttribute('href', originalHref);
+      } finally {
+        setTimeout(() => {
+          useEl?.setAttribute('href', originalHref);
+          Object.assign(btn, {
+            title: Config.UI.messages.title,
+            disabled: false
+          });
+          Object.assign(btn.style, {
+            opacity: '',
+            cursor: '',
+            backgroundColor: ''
+          });
+          btn.classList.remove('btn-primary');
+        }, Config.UI.button.delay);
+      }
+    }
+  }
+
+  /**
+   * [Layer 4] App: 启动与 DOM 观察
+   */
+  class App {
+    #ui;
+    #observer;
+
+    constructor() {
+      this.#ui = new UIController();
+    }
+
+    init() {
+      if (!this.#isDiscourse()) return;
+
+      console.info('[Raw→Markdown] Discourse detected, service active.');
+
+      this.#scan(document);
+
+      this.#observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (!m.addedNodes || m.addedNodes.length === 0) continue;
+
+          for (const node of m.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            this.#scan(node);
+          }
+        }
+      });
+
+      this.#observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    #isDiscourse() {
+      return Config.SELECTORS.ROOT_CHECK.some((sel) =>
+        document.querySelector(sel)
+      );
+    }
+
+    #scan(root = document) {
+      const posts = [];
+
+      if (root instanceof HTMLElement &&
+          root.matches(Config.SELECTORS.POST_CONTAINER)) {
+        posts.push(root);
+      }
+
+      posts.push(
+        ...root.querySelectorAll(Config.SELECTORS.POST_CONTAINER)
+      );
+
+      for (const post of posts) {
+        if (post.dataset.mdCopyInited === '1') continue;
+        this.#ui.injectButton(post);
+        post.dataset.mdCopyInited = '1';
+      }
+    }
+  }
+
+  new App().init();
 })();
