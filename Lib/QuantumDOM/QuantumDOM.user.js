@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         !.QuantumDOM
-// @description  终极DOM实用工具库，结合了事件驱动的高性能与穿透Shadow DOM/Iframe的强大遍历能力
-// @version      1.0.8
+// @description  终极 DOM 库：ES2022 语法、内存安全缓存、ShadowDOM/Iframe 穿透、遵循 DRY/KISS 原则。
+// @version      2.1.1
 // @author       ank
 // @namespace    http://010314.xyz/
-// @license      AGPL-3.0-or-later
+// @license      AGPL-3.0
 // @grant        none
-// @api          https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.Api.md
 // @doc          https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.Doc.md
 // @test         https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.Test.html
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.user.js
@@ -14,285 +13,511 @@
 // ==/UserScript==
 
 (function () {
-  'use strict';
+    'use strict';
 
-  class QuantumDOMError extends Error { constructor(message) { super(`[QuantumDOM] ${message}`); this.name = this.constructor.name; } }
-  class ParseError extends QuantumDOMError { }
-  class TimeoutError extends QuantumDOMError { }
-  class TraversalError extends QuantumDOMError { }
+    /**
+     * [Layer 1] Constants & Configuration
+     * 集中管理魔法字符串和默认配置
+     */
+    const TOKENS = {
+        SEP: '>>>',
+        SHADOW: 'shadow-root',
+        IFRAME: 'iframe-content'
+    };
 
-  class QuantumDOM {
-    #win;
-    #doc;
-    #observerManager = new Map();
-    #cache = new Map();
+    const NODE_TYPES = {
+        ELEMENT: 1,
+        DOCUMENT: 9,
+        FRAGMENT: 11
+    };
 
-    constructor() {
-      this.#win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-      this.#doc = this.#win.document;
-      this.config = {
-        timeout: 10000,
-        debug: false,
-        cacheEnabled: true,
-        cacheTTL: 5 * 60 * 1000,
-      };
-    }
-
-    configure(options) { Object.assign(this.config, options); this.#log('Configuration updated:', this.config); }
-    #log(...args) { if (this.config.debug) console.log('[QuantumDOM]', ...args); }
-    #warn(...args) { if (this.config.debug) console.warn('[QuantumDOM]', ...args); }
-
-    #parseQuery(selector) {
-      if (typeof selector !== 'string' || !selector.trim()) throw new ParseError('选择器必须是非空字符串。');
-      return selector.split('>>>').map(part => {
-        const trimmed = part.trim();
-        if (!trimmed) throw new ParseError(`选择器片段不能为空: "${selector}"`);
-        if (trimmed === 'shadow-root') return { type: 'SHADOW_ROOT' };
-        if (trimmed === 'iframe-content') return { type: 'IFRAME_CONTENT' };
-        return { type: 'QUERY', selector: trimmed };
-      });
-    }
-
-    async #waitForIframe(iframe) {
-      if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
-        return iframe.contentDocument;
-      }
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new TraversalError(`Iframe 加载超时: ${iframe.src || '(no src)'}`));
-        }, this.config.timeout);
-        iframe.addEventListener('load', () => {
-          clearTimeout(timer);
-          resolve(iframe.contentDocument);
-        }, { once: true });
-      });
-    }
-
-    async #executePlan(plan, root) {
-      let contexts = [root];
-      for (const step of plan) {
-        if (contexts.length === 0) break;
-        const nextContexts = [];
-        for (const ctx of contexts) {
-          try {
-            if (step.type === 'QUERY') {
-              nextContexts.push(...ctx.querySelectorAll(step.selector));
-            } else if (step.type === 'SHADOW_ROOT') {
-              if (ctx.shadowRoot) nextContexts.push(ctx.shadowRoot);
-            } else if (step.type === 'IFRAME_CONTENT') {
-              if (ctx.tagName === 'IFRAME') {
-                const doc = await this.#waitForIframe(ctx);
-                if (doc) nextContexts.push(doc);
-              }
-            }
-          } catch (e) { this.#warn(`遍历步骤失败: ${e.message}`); }
-        }
-        contexts = nextContexts;
-      }
-      return contexts;
-    }
-
-    #getSharedObserver(rootNode) {
-      if (!this.#observerManager.has(rootNode)) {
-        const callbacks = new Set();
-        const observer = new MutationObserver(() => callbacks.forEach(cb => cb()));
-        observer.observe(rootNode, { childList: true, subtree: true });
-        this.#observerManager.set(rootNode, { observer, callbacks, refCount: 0 });
-      }
-      const manager = this.#observerManager.get(rootNode);
-      manager.refCount++;
-      return {
-        addCallback: (cb) => manager.callbacks.add(cb),
-        removeCallback: (cb) => {
-          manager.callbacks.delete(cb);
-          manager.refCount--;
-          if (manager.refCount === 0) {
-            manager.observer.disconnect();
-            this.#observerManager.delete(rootNode);
-          }
+    // 公共工具函数
+    const Utils = {
+        isValidContext(node) {
+            return node && Object.values(NODE_TYPES).includes(node.nodeType);
         },
-      };
-    }
 
-    async get(selectors, { parent = this.#doc, timeout = this.config.timeout } = {}) {
-      const isSingle = !Array.isArray(selectors);
-      const selArray = isSingle ? [selectors] : selectors;
-
-      const getOne = (selector) => {
-        const cacheKey = `${selector}|${parent.nodeName}`;
-        if (this.config.cacheEnabled) {
-          const cached = this.#cache.get(cacheKey);
-          if (cached && (Date.now() - cached.timestamp < this.config.cacheTTL)) {
-            this.#log(`Cache HIT for "${selector}"`);
-            return Promise.resolve(cached.value);
-          }
-        }
-
-        return new Promise(async (resolve, reject) => {
-          const plan = this.#parseQuery(selector);
-          let observerHandle;
-
-          const check = async () => {
-            const contexts = await this.#executePlan(plan, parent);
-            if (contexts.length > 0) {
-              if (observerHandle) observerHandle.removeCallback(check);
-              if (timer) clearTimeout(timer);
-              return resolve(contexts[0]);
+        isIframeReady(iframe) {
+            try {
+                const doc = iframe.contentDocument;
+                return doc && doc.readyState === 'complete' && doc.location.href !== 'about:blank';
+            } catch (e) {
+                return false;
             }
-          };
+        },
 
-          const timer = timeout > 0 ? setTimeout(() => {
-            if (observerHandle) observerHandle.removeCallback(check);
-            reject(new TimeoutError(`元素查找超时: "${selector}"`));
-          }, timeout) : null;
-
-          await check();
-
-          observerHandle = this.#getSharedObserver(parent);
-          observerHandle.addCallback(check);
-        }).then(result => {
-          if (this.config.cacheEnabled && result) {
-            this.#log(`Cache SET for "${selector}"`);
-            this.#cache.set(cacheKey, { value: result, timestamp: Date.now() });
-          }
-          return result;
-        });
-      };
-
-      if (isSingle) {
-        try {
-          return await getOne(selArray[0]);
-        } catch (e) {
-          this.#warn(e.message);
-          if (e instanceof QuantumDOMError) throw e;
-          throw new QuantumDOMError(e.message);
+        createCleanupManager() {
+            const tasks = new Set();
+            return {
+                add(task) {
+                    tasks.add(task);
+                    return () => tasks.delete(task);
+                },
+                execute() {
+                    tasks.forEach(task => {
+                        try {
+                            task();
+                        } catch (e) {
+                            console.error('[QDOM] Cleanup error:', e);
+                        }
+                    });
+                    tasks.clear();
+                },
+                get size() { return tasks.size; }
+            };
         }
-      } else {
-        return Promise.all(selArray.map(sel => getOne(sel).catch(err => {
-          this.#warn(err.message);
-          return null;
-        })));
-      }
+    };
+
+    class QError extends Error {
+        constructor(msg, code = 'GENERIC') {
+            super(`[QuantumDOM] ${msg}`);
+            this.name = 'QuantumError';
+            this.code = code;
+        }
+    }
+    class TimeoutError extends QError { constructor(m) { super(m, 'TIMEOUT'); } }
+
+    class Config {
+        #data = {
+            timeout: 10_000,
+            debug: false,
+            cache: true,
+            cacheTTL: 300_000
+        };
+
+        get(key) { return this.#data[key]; }
+        getAll() { return { ...this.#data }; }
+        update(opts) { Object.assign(this.#data, opts); }
     }
 
-    each(selector, callback, { parent = this.#doc } = {}) {
-      const plan = this.#parseQuery(selector);
-      const stoppers = new Set();
-      let active = true;
+    class Logger {
+        #config;
+        constructor(config) { this.#config = config; }
+        log(...args) { if (this.#config.get('debug')) console.log('%c[QDOM]', 'color:#00a8ff', ...args); }
+        warn(...args) { if (this.#config.get('debug')) console.warn('[QDOM]', ...args); }
+        error(...args) { console.error('[QDOM]', ...args); }
+    }
 
-      const stopAll = () => {
-        if (!active) return;
-        active = false;
-        stoppers.forEach(s => s());
-        stoppers.clear();
-        this.#log(`each() stopped for selector: "${selector}"`);
-      };
+    /**
+     * [Layer 2] Simplified Caching (Memory Safe)
+     * 使用 WeakMap 简化缓存逻辑，自动清理
+     */
+    class DomCache {
+        #config;
+        #store = new WeakMap(); // Key: ParentNode, Value: Map<Selector, Node>
+        #timestamps = new WeakMap(); // Key: ParentNode, Value: Map<Selector, timestamp>
 
-      const setupListener = (root, currentPlan) => {
-        if (!active || !root) return;
-        const handledHosts = new WeakSet();
+        constructor(config) { this.#config = config; }
 
-        let boundaryIndex = currentPlan.findIndex(step => step.type !== 'QUERY');
-        const queryPlan = boundaryIndex === -1 ? currentPlan : currentPlan.slice(0, boundaryIndex);
-        const boundaryPlan = boundaryIndex === -1 ? [] : currentPlan.slice(boundaryIndex);
+        get(parent, selector) {
+            if (!this.#config.get('cache')) return null;
 
-        const checkAndProceed = async () => {
-          if (!active) return;
-          const hosts = queryPlan.length > 0 ? await this.#executePlan(queryPlan, root) : [root];
+            const contextMap = this.#store.get(parent);
+            const timeMap = this.#timestamps.get(parent);
 
-          for (const host of hosts) {
-            if (handledHosts.has(host)) continue;
+            if (!contextMap || !timeMap) return null;
 
-            if (boundaryPlan.length === 0) {
-              handledHosts.add(host);
-              if (callback(host) === false) {
-                stopAll();
-                return;
-              }
-            } else {
-              const boundaryStep = boundaryPlan[0];
-              const remainingPlan = boundaryPlan.slice(1);
-              const nextRoots = await this.#executePlan([boundaryStep], host);
-              if (nextRoots.length > 0) {
-                handledHosts.add(host);
-                for (const nextRoot of nextRoots) {
-                  setupListener(nextRoot, remainingPlan);
+            const node = contextMap.get(selector);
+            if (!node) return null;
+
+            // TTL Check
+            const ts = timeMap.get(selector);
+            if (Date.now() - ts > this.#config.get('cacheTTL')) {
+                contextMap.delete(selector);
+                timeMap.delete(selector);
+                return null;
+            }
+
+            // Connection Check
+            if (!node.isConnected) {
+                contextMap.delete(selector);
+                timeMap.delete(selector);
+                return null;
+            }
+
+            return node;
+        }
+
+        set(parent, selector, node) {
+            if (!this.#config.get('cache') || !node) return;
+
+            let contextMap = this.#store.get(parent);
+            let timeMap = this.#timestamps.get(parent);
+
+            if (!contextMap) {
+                contextMap = new Map();
+                this.#store.set(parent, contextMap);
+            }
+
+            if (!timeMap) {
+                timeMap = new Map();
+                this.#timestamps.set(parent, timeMap);
+            }
+
+            contextMap.set(selector, node);
+            timeMap.set(selector, Date.now());
+        }
+
+        clear() {
+            this.#store = new WeakMap();
+            this.#timestamps = new WeakMap();
+        }
+    }
+
+    /**
+     * [Layer 3] Engine: Parsing & Traversal
+     * 核心逻辑：解析选择器路径，处理 ShadowDOM/Iframe
+     */
+    class SelectorParser {
+        static parse(raw) {
+            if (typeof raw !== 'string' || !raw.trim()) throw new QError('Empty selector', 'PARSE');
+            // Fast path check
+            if (!raw.includes(TOKENS.SEP)) {
+                return { isFast: true, path: [{ type: 'QUERY', val: raw.trim() }] };
+            }
+
+            const segments = raw.split(TOKENS.SEP).map(s => {
+                const t = s.trim();
+                if (t === TOKENS.SHADOW) return { type: 'SHADOW' };
+                if (t === TOKENS.IFRAME) return { type: 'IFRAME' };
+                return { type: 'QUERY', val: t };
+            });
+
+            return { isFast: false, path: segments };
+        }
+    }
+
+    class DomTraverser {
+        static async waitForIframeLoad(iframeNode, timeoutMs = 2000) {
+            if (Utils.isIframeReady(iframeNode)) return iframeNode.contentDocument;
+
+            return new Promise((resolve) => {
+                const cleanup = Utils.createCleanupManager();
+
+                const timer = setTimeout(() => {
+                    cleanup.execute();
+                    resolve(null);
+                }, timeoutMs);
+
+                cleanup.add(() => clearTimeout(timer));
+
+                const handler = () => {
+                    if (Utils.isIframeReady(iframeNode)) {
+                        cleanup.execute();
+                        resolve(iframeNode.contentDocument);
+                    }
+                };
+
+                cleanup.add(() => iframeNode.removeEventListener('load', handler));
+                iframeNode.addEventListener('load', handler);
+            });
+        }
+
+        static findNextContext(currentCtx, step) {
+            if (!currentCtx) return null;
+
+            try {
+                switch (step.type) {
+                    case 'QUERY':
+                        return currentCtx.querySelector ? currentCtx.querySelector(step.val) : null;
+
+                    case 'SHADOW':
+                        return currentCtx.shadowRoot || null;
+
+                    case 'IFRAME':
+                        if (currentCtx.tagName === 'IFRAME') {
+                            const doc = currentCtx.contentDocument;
+                            return (doc && doc.readyState === 'complete') ? doc : null;
+                        }
+                        return null;
+
+                    default:
+                        return null;
                 }
-              }
+            } catch (e) {
+                // Security errors ignored
+                return null;
             }
-          }
-        };
-
-        if (root.nodeType === Node.DOCUMENT_NODE || root.nodeType === Node.ELEMENT_NODE || root.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-          const observer = this.#getSharedObserver(root);
-          observer.addCallback(checkAndProceed);
-          stoppers.add(() => observer.removeCallback(checkAndProceed));
         }
-        checkAndProceed();
-      };
-
-      setupListener(parent, plan);
-      return stopAll;
     }
 
-    async on(eventName, selector, callback, { parent = this.#doc } = {}) {
-      const plan = this.#parseQuery(selector);
-      const targetSelector = plan.pop().selector;
-      const rootPlan = plan;
+    /**
+     * [Layer 4] Public Facade
+     * 对外暴露的 API
+     */
+    class QuantumCore {
+        #config;
+        #logger;
+        #cache;
 
-      const attachListener = (root) => {
-        const handler = (event) => {
-          const target = event.target.closest(targetSelector);
-          if (target && root.contains(target)) {
-            callback(event, target);
-          }
-        };
-        root.addEventListener(eventName, handler, true);
-        return () => root.removeEventListener(eventName, handler, true);
-      };
+        constructor() {
+            this.#config = new Config();
+            this.#logger = new Logger(this.#config);
+            this.#cache = new DomCache(this.#config);
+        }
 
-      const contexts = await this.#executePlan(rootPlan, parent);
-      if (contexts.length === 0) {
-        this.#warn(`on(): 未找到用于附加监听器的父级元素: "${selector}"`);
-        return () => { };
-      }
-      const removers = contexts.map(attachListener);
-      return () => removers.forEach(r => r());
+        // --- Configuration ---
+        get config() { return this.#config.getAll(); }
+        configure(opts) { this.#config.update(opts); }
+        clearCache() { this.#cache.clear(); }
+
+        // --- API: Get (Async) ---
+        async get(selector, options = {}) {
+            if (Array.isArray(selector)) {
+                return Promise.all(selector.map(s => this.get(s, options)));
+            }
+
+            const { parent = document, timeout = this.#config.get('timeout') } = options;
+
+            // 1. Check Cache
+            const cached = this.#cache.get(parent, selector);
+            if (cached) return cached;
+
+            // 2. Parse
+            const { path } = SelectorParser.parse(selector);
+
+            // 3. Simplified polling approach
+            const startTime = Date.now();
+            const pollInterval = 50; // 50ms polling
+
+            const checkPath = async () => {
+                let ctx = parent;
+
+                for (const step of path) {
+                    if (!ctx) break;
+
+                    let next = DomTraverser.findNextContext(ctx, step);
+
+                    // Special Async Handling for Iframe
+                    if (!next && step.type === 'IFRAME' && ctx.tagName === 'IFRAME') {
+                        next = await DomTraverser.waitForIframeLoad(ctx, 1000);
+                    }
+
+                    ctx = next;
+                }
+
+                if (ctx) {
+                    this.#cache.set(parent, selector, ctx);
+                    return ctx;
+                }
+
+                return null;
+            };
+
+            return new Promise((resolve, reject) => {
+                const cleanup = Utils.createCleanupManager();
+
+                const timer = setTimeout(() => {
+                    cleanup.execute();
+                    if (options.returnNullOnTimeout) {
+                        resolve(null);
+                    } else {
+                        reject(new TimeoutError(`Selector timed out: ${selector}`));
+                    }
+                }, timeout);
+
+                cleanup.add(() => clearTimeout(timer));
+
+                const poll = async () => {
+                    if (Date.now() - startTime >= timeout) return;
+
+                    const result = await checkPath();
+                    if (result) {
+                        cleanup.execute();
+                        resolve(result);
+                        return;
+                    }
+
+                    // Continue polling
+                    const nextTimer = setTimeout(poll, pollInterval);
+                    cleanup.add(() => clearTimeout(nextTimer));
+                };
+
+                poll();
+            });
+        }
+
+        // --- API: Each (Observer) ---
+        each(selector, callback, options = {}) {
+            const { parent = document } = options;
+            const { path } = SelectorParser.parse(selector);
+
+            const cleanup = Utils.createCleanupManager();
+            let active = true;
+            const processed = new WeakSet();
+            const logger = this.#logger;
+
+            const processNode = (node, isAsync = false) => {
+                if (!active || processed.has(node)) return;
+                processed.add(node);
+                try {
+                    callback(node, isAsync);
+                } catch (e) {
+                    logger.error('Each callback error:', e);
+                }
+            };
+
+            const traversePath = (ctx, stepIndex, isAsync) => {
+                if (!active || !ctx || stepIndex >= path.length) {
+                    if (stepIndex >= path.length) processNode(ctx, isAsync);
+                    return;
+                }
+
+                const step = path[stepIndex];
+
+                switch (step.type) {
+                    case 'QUERY':
+                        // Initial scan
+                        if (ctx.querySelectorAll) {
+                            ctx.querySelectorAll(step.val).forEach(node => {
+                                traversePath(node, stepIndex + 1, isAsync);
+                            });
+                        }
+
+                        // Observe future changes
+                        if (Utils.isValidContext(ctx)) {
+                            const obs = new MutationObserver(() => {
+                                if (active && ctx.querySelectorAll) {
+                                    ctx.querySelectorAll(step.val).forEach(node => {
+                                        traversePath(node, stepIndex + 1, true);
+                                    });
+                                }
+                            });
+
+                            obs.observe(ctx, { childList: true, subtree: true });
+                            cleanup.add(() => obs.disconnect());
+                        }
+                        break;
+
+                    case 'SHADOW':
+                        if (ctx.shadowRoot) {
+                            traversePath(ctx.shadowRoot, stepIndex + 1, isAsync);
+                        }
+                        break;
+
+                    case 'IFRAME':
+                        if (ctx.tagName === 'IFRAME') {
+                            const handleIframe = () => {
+                                try {
+                                    if (ctx.contentDocument) {
+                                        traversePath(ctx.contentDocument, stepIndex + 1, isAsync);
+                                    }
+                                } catch (e) {
+                                    // Cross-origin blocked
+                                }
+                            };
+
+                            handleIframe();
+                            const reloadHandler = () => {
+                                if (active) handleIframe();
+                            };
+                            ctx.addEventListener('load', reloadHandler);
+                            cleanup.add(() => ctx.removeEventListener('load', reloadHandler));
+                        }
+                        break;
+                }
+            };
+
+            // Start traversal
+            traversePath(parent, 0, false);
+
+            // Return stop function
+            return () => {
+                active = false;
+                cleanup.execute();
+            };
+        }
+
+        // --- API: On (Delegation) ---
+        async on(event, selector, callback, options = {}) {
+            const { parent = document, capture = false } = options;
+            const { path } = SelectorParser.parse(selector);
+
+            const targetStep = path[path.length - 1];
+
+            // Fast path: simple selector, use native delegation
+            if (path.length === 1 && targetStep.type === 'QUERY') {
+                const handler = (e) => {
+                    const t = e.target.closest(targetStep.val);
+                    if (t && parent.contains(t)) callback(e, t);
+                };
+                parent.addEventListener(event, handler, capture);
+                return () => parent.removeEventListener(event, handler, capture);
+            }
+
+            // Complex path: find context containers
+            const contextPathStr = path.slice(0, -1).map(s => {
+                if (s.type === 'SHADOW') return TOKENS.SHADOW;
+                if (s.type === 'IFRAME') return TOKENS.IFRAME;
+                return s.val;
+            }).join(` ${TOKENS.SEP} `);
+
+            const cleanup = Utils.createCleanupManager();
+
+            // Handle target matching（每次事件都可触发，不再对目标元素做一次性去重）
+            const handleTarget = (e, ctx) => {
+                if (targetStep.type === 'QUERY') {
+                    const t = e.target.closest ? e.target.closest(targetStep.val) : null;
+                    if (t && ctx.contains(t)) {
+                        callback(e, t);
+                    }
+                }
+            };
+
+            // Find all context containers and bind listeners
+            const stopEach = this.each(contextPathStr, (ctx) => {
+                if (!ctx || !ctx.addEventListener) return;
+
+                const handler = (e) => handleTarget(e, ctx);
+                ctx.addEventListener(event, handler, capture);
+                cleanup.add(() => ctx.removeEventListener(event, handler, capture));
+            }, { parent });
+
+            // Combined cleanup
+            return () => {
+                stopEach();
+                cleanup.execute();
+            };
+        }
+
+        // --- Utils ---
+        create(html, options = {}) {
+            const { parent, mapIds } = options;
+            const t = document.createElement('template');
+            t.innerHTML = html.trim();
+            const frag = t.content;
+
+            if (mapIds) {
+                const map = { 0: frag.firstElementChild };
+                frag.querySelectorAll('[id]').forEach(el => map[el.id] = el);
+                if (parent) parent.appendChild(frag);
+                return map;
+            }
+
+            const node = frag.firstElementChild;
+            if (parent && node) parent.appendChild(node);
+            return node;
+        }
+
+        css(cssText, id, root = document.head) {
+            let el = id ? root.querySelector(`#${id}`) : null;
+            if (!el) {
+                el = document.createElement('style');
+                if (id) el.id = id;
+                root.appendChild(el);
+            }
+            if (el.textContent !== cssText) el.textContent = cssText;
+            return el;
+        }
     }
 
-    create(htmlString, { parent = null, mapIds = false } = {}) {
-      const template = this.#doc.createElement('template');
-      template.innerHTML = htmlString.trim();
-      const node = template.content.firstElementChild;
-      if (!node) return null;
-      if (parent && (parent instanceof Element || parent instanceof DocumentFragment)) {
-        parent.appendChild(node);
-      }
-      if (mapIds) {
-        const map = { 0: node };
-        if (node.id) map[node.id] = node;
-        node.querySelectorAll('[id]').forEach(el => { if (el.id) map[el.id] = el; });
-        return map;
-      }
-      return node;
-    }
+    // Export
+    if (window.QuantumDOM) return;
+    const core = new QuantumCore();
+    // Expose Classes for Error checking
+    core.TimeoutError = TimeoutError;
+    core.QuantumError = QError;
 
-    css(cssText, id = null) {
-      if (id && this.#doc.getElementById(id)) {
-        return this.#doc.getElementById(id);
-      }
-      const style = this.create(`<style ${id ? `id="${id}"` : ''}>${cssText}</style>`);
-      this.#doc.head.appendChild(style);
-      return style;
-    }
-
-    clearCache() { this.#cache.clear(); this.#log('Cache cleared.'); }
-  }
-
-  const instance = new QuantumDOM();
-  instance.QuantumDOMError = QuantumDOMError;
-  instance.ParseError = ParseError;
-  instance.TimeoutError = TimeoutError;
-  instance.TraversalError = TraversalError;
-  if (typeof window.QuantumDOM === 'undefined') { window.QuantumDOM = instance; }
+    window.QuantumDOM = core;
+    console.log('[QuantumDOM] v2.1.1 Loaded (Optimized Core, on() fixed)');
 })();
