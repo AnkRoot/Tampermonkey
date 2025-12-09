@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         !.Discourse Raw → Markdown Copier
 // @description  📝 Discourse 帖子 Markdown 复制工具——通过 Raw API 获取原始内容，智能转换为标准 Markdown，支持图片修复、BBCode转换、链接美化、代码高亮，采用分层架构设计，适用于技术文档迁移、博客转载、跨平台发布等场景。
-// @version      2.5.2
+// @version      2.5.3
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0
@@ -9,7 +9,6 @@
 // @match        */t/*
 // @grant        GM_setClipboard
 // @run-at       document-end
-// @require      https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.user.js
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // ==/UserScript==
@@ -506,7 +505,7 @@
    */
   class App {
     #ui;
-    #stopper;
+    #observer;
 
     constructor() {
       this.#ui = new UIController();
@@ -517,32 +516,57 @@
 
       console.info('[Raw→Markdown] Discourse detected, service active.');
 
-      // 仅使用 QuantumDOM each，负责初始扫描 + 后续监听
-      this.#startQuantumWatcher();
+      this.#scan(document);
+      this.#startObserver();
     }
 
-    #startQuantumWatcher() {
-      const qdom = window.QuantumDOM;
-      if (!qdom?.each) return false;
+    #startObserver() {
+      this.#observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (!m.addedNodes || m.addedNodes.length === 0) continue;
 
-      const selector = `${Config.SELECTORS.POST_CONTAINER} ${Config.SELECTORS.ACTION_CONTAINER}`;
-      this.#stopper = qdom.each(selector, (actions) => {
-        const post = actions.closest(Config.SELECTORS.POST_CONTAINER);
-        if (!post) return;
-
-        const hasBtn = actions.querySelector('.discourse-md-copy-btn');
-        if (hasBtn) return;
-
-        this.#ui.injectButton(post);
+          for (const node of m.addedNodes) {
+            if (node instanceof HTMLElement || node instanceof DocumentFragment) {
+              this.#scan(node);
+            }
+          }
+        }
       });
 
-      return true;
+      this.#observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
     }
 
     #isDiscourse() {
       return Config.SELECTORS.ROOT_CHECK.some((sel) =>
         document.querySelector(sel)
       );
+    }
+
+    #scan(root = document) {
+      const posts = new Set();
+
+      const tryAddPost = (el) => {
+        if (el?.matches?.(Config.SELECTORS.POST_CONTAINER)) posts.add(el);
+      };
+
+      if (root instanceof HTMLElement) {
+        tryAddPost(root);
+        tryAddPost(root.closest?.(Config.SELECTORS.POST_CONTAINER));
+      }
+
+      root.querySelectorAll?.(Config.SELECTORS.POST_CONTAINER)
+        ?.forEach((p) => posts.add(p));
+
+      for (const post of posts) {
+        const actions = post.querySelector(Config.SELECTORS.ACTION_CONTAINER);
+        if (!actions) continue;
+        if (actions.querySelector('.discourse-md-copy-btn')) continue;
+
+        this.#ui.injectButton(post);
+      }
     }
   }
 
