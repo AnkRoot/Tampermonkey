@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         !.Discourse Raw → Markdown Copier
 // @description  📝 Discourse 帖子 Markdown 复制工具——通过 Raw API 获取原始内容，智能转换为标准 Markdown，支持图片修复、BBCode转换、链接美化、代码高亮，采用分层架构设计，适用于技术文档迁移、博客转载、跨平台发布等场景。
-// @version      2.5.1
+// @version      2.5.2
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0
@@ -9,6 +9,7 @@
 // @match        */t/*
 // @grant        GM_setClipboard
 // @run-at       document-end
+// @require      https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.user.js
 // @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
 // ==/UserScript==
@@ -413,10 +414,10 @@
       const actionsContainer = postElement.querySelector(
         Config.SELECTORS.ACTION_CONTAINER
       );
-      if (!actionsContainer || actionsContainer.querySelector('.discourse-md-copy-btn')) return;
+      if (!actionsContainer || actionsContainer.querySelector('.discourse-md-copy-btn')) return false;
 
       const { topicId, postNumber } = this.#getPostMeta(postElement);
-      if (!topicId || !postNumber) return;
+      if (!topicId || !postNumber) return false;
 
       const existingBtn = actionsContainer.querySelector(Config.SELECTORS.EXISTING_BTN);
       const btn = document.createElement('button');
@@ -436,6 +437,7 @@
       );
 
       actionsContainer.prepend(btn);
+      return true;
     }
 
     #getPostMeta(postElement) {
@@ -504,7 +506,7 @@
    */
   class App {
     #ui;
-    #observer;
+    #stopper;
 
     constructor() {
       this.#ui = new UIController();
@@ -515,48 +517,32 @@
 
       console.info('[Raw→Markdown] Discourse detected, service active.');
 
-      this.#scan(document);
+      // 仅使用 QuantumDOM each，负责初始扫描 + 后续监听
+      this.#startQuantumWatcher();
+    }
 
-      this.#observer = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          if (!m.addedNodes || m.addedNodes.length === 0) continue;
+    #startQuantumWatcher() {
+      const qdom = window.QuantumDOM;
+      if (!qdom?.each) return false;
 
-          for (const node of m.addedNodes) {
-            if (!(node instanceof HTMLElement)) continue;
-            this.#scan(node);
-          }
-        }
+      const selector = `${Config.SELECTORS.POST_CONTAINER} ${Config.SELECTORS.ACTION_CONTAINER}`;
+      this.#stopper = qdom.each(selector, (actions) => {
+        const post = actions.closest(Config.SELECTORS.POST_CONTAINER);
+        if (!post) return;
+
+        const hasBtn = actions.querySelector('.discourse-md-copy-btn');
+        if (hasBtn) return;
+
+        this.#ui.injectButton(post);
       });
 
-      this.#observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-      });
+      return true;
     }
 
     #isDiscourse() {
       return Config.SELECTORS.ROOT_CHECK.some((sel) =>
         document.querySelector(sel)
       );
-    }
-
-    #scan(root = document) {
-      const posts = [];
-
-      if (root instanceof HTMLElement &&
-          root.matches(Config.SELECTORS.POST_CONTAINER)) {
-        posts.push(root);
-      }
-
-      posts.push(
-        ...root.querySelectorAll(Config.SELECTORS.POST_CONTAINER)
-      );
-
-      for (const post of posts) {
-        if (post.dataset.mdCopyInited === '1') continue;
-        this.#ui.injectButton(post);
-        post.dataset.mdCopyInited = '1';
-      }
     }
   }
 
