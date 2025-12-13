@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.LINUX.DO CF Challenge Jump
 // @description  高效检测 Cloudflare 阻断，自动跳转 Challenge 验证，无感静默运行。
-// @version      0.0.1
+// @version      0.0.2
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -16,112 +16,100 @@
 ;(function () {
   'use strict'
 
-  class Config {
-    static CHALLENGE_PATH = '/challenge'
-    static ERROR_KEYWORDS = [
-      '403 error',
-      '该回应是很久以前创建的',
-      'reaction was created too long ago',
-      '我们无法加载该话题',
-      'We cannot load this topic'
-    ]
+  const CHALLENGE_PATH = '/challenge'
+  const LOOP_PROTECTION_MS = 3000
+  const DEBOUNCE_MS = 200
+  const KEY_LAST_JUMP = 'ld_cf_last_jump'
 
-    static SELECTORS = {
-      DIALOG: '.dialog-body',
-      CONTENT: '.topic-post, .topic-body, .timeline-container',
-    }
+  const ERROR_KEYWORDS = [
+    '403 error',
+    '该回应是很久以前创建的',
+    'reaction was created too long ago',
+    '我们无法加载该话题',
+    'We cannot load this topic'
+  ].map(s => s.toLowerCase())
 
-    static LOOP_PROTECTION_MS = 3000 
+  const SELECTORS = {
+    DIALOG: '.dialog-body',
+    CONTENT: '.topic-post, .topic-body, .timeline-container',
+    CLOSE_BUTTON: '.dialog-footer button.btn'
   }
 
-  class SessionStore {
-    static #KEY_LAST_JUMP = 'ld_cf_last_jump'
+  const $ = selector => document.querySelector(selector)
+  const lowerText = el => (el?.textContent || '').toLowerCase()
 
-    static canJump() {
-      const last = parseInt(sessionStorage.getItem(this.#KEY_LAST_JUMP) || '0', 10)
-      return Date.now() - last > Config.LOOP_PROTECTION_MS
-    }
+  let memoryLastJump = 0
+  let observer = null
 
-    static recordJump() {
-      sessionStorage.setItem(this.#KEY_LAST_JUMP, Date.now().toString())
-    }
-  }
-
-  class Core {
-    #observer = null
-    #timer = null
-
-    constructor() {
-      this.init()
-    }
-
-    get #isChallengePage() {
-      return location.pathname.startsWith(Config.CHALLENGE_PATH)
-    }
-
-    #shouldJump() {
-      if (this.#isChallengePage) return false
-
-      const dialog = document.querySelector(Config.SELECTORS.DIALOG)
-      if (!dialog) return false
-
-      const dialogText = dialog.innerText || ''
-      const hasErrorText = Config.ERROR_KEYWORDS.some(key => dialogText.includes(key))
-
-      if (!hasErrorText) return false
-
-      // 防止误判：必须确认正文确实缺失
-      const hasContent = document.querySelector(Config.SELECTORS.CONTENT) !== null
-      
-      return !hasContent
-    }
-
-    #performJump() {
-      if (!SessionStore.canJump()) {
-        console.warn('[CF Jump] 跳转过于频繁，暂停执行以防止死循环。')
-        return
-      }
-
-      console.info('[CF Jump] 检测到 Cloudflare 阻断，正在跳转验证...')
-      this.#disconnect()
-      SessionStore.recordJump()
-      
-      const targetUrl = `${Config.CHALLENGE_PATH}?redirect=${encodeURIComponent(location.href)}`
-      location.href = targetUrl
-    }
-
-    #debouncedCheck() {
-      if (this.#timer) clearTimeout(this.#timer)
-      this.#timer = setTimeout(() => {
-        if (this.#shouldJump()) {
-          this.#performJump()
-        }
-      }, 200)
-    }
-
-    #disconnect() {
-      if (this.#observer) {
-        this.#observer.disconnect()
-        this.#observer = null
-      }
-    }
-
-    init() {
-      if (this.#shouldJump()) {
-        this.#performJump()
-        return
-      }
-
-      this.#observer = new MutationObserver(() => this.#debouncedCheck())
-      
-      this.#observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      })
+  const readLastJump = () => {
+    try {
+      const n = Number(sessionStorage.getItem(KEY_LAST_JUMP))
+      return Number.isFinite(n) ? n : 0
+    } catch {
+      return memoryLastJump
     }
   }
 
-  new Core()
+  const writeLastJump = timestamp => {
+    memoryLastJump = timestamp
+    try {
+      sessionStorage.setItem(KEY_LAST_JUMP, String(timestamp))
+    } catch {
+      // 部分浏览器隐私模式可能禁用 sessionStorage
+    }
+  }
+
+  const canJump = () => Date.now() - readLastJump() > LOOP_PROTECTION_MS
+
+  const isChallengePage = () => location.pathname.startsWith(CHALLENGE_PATH)
+
+  const dismissDialog = () => $(SELECTORS.CLOSE_BUTTON)?.click()
+
+  const hasContent = () => $(SELECTORS.CONTENT) !== null
+
+  const shouldJump = () => {
+    if (isChallengePage()) return false
+
+    const dialog = $(SELECTORS.DIALOG)
+    if (!dialog) return false
+
+    const text = lowerText(dialog)
+    if (!ERROR_KEYWORDS.some(k => text.includes(k))) return false
+
+    if (hasContent()) return (dismissDialog(), false)
+
+    return true
+  }
+
+  const jump = () => {
+    if (!canJump()) return console.warn('[CF Jump] 跳转过于频繁，暂停执行以防止死循环。')
+
+    console.info('[CF Jump] 检测到 Cloudflare 阻断，正在跳转验证...')
+    observer?.disconnect()
+    writeLastJump(Date.now())
+    location.href = `${CHALLENGE_PATH}?redirect=${encodeURIComponent(location.href)}`
+  }
+
+  const debounce = (fn, ms) => {
+    let timer = null
+    return () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        fn()
+      }, ms)
+    }
+  }
+
+  const check = () => shouldJump() && jump()
+  const scheduleCheck = debounce(check, DEBOUNCE_MS)
+
+  check()
+  observer = new MutationObserver(scheduleCheck)
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  })
 
 })()
