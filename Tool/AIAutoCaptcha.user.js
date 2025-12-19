@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.AIAutoCaptcha
 // @description  智能填表。支持 OpenAI/Gemini。自动处理文本验证码；按住 [Alt+点击] 图片强制识别并填入验证码框（找不到则输出到控制台）。
-// @version      3.1.1
+// @version      3.2.0
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -27,13 +27,13 @@
                 baseUrl: 'https://api.openai.com/v1/chat/completions',
                 apiKey: '',
                 model: 'gpt-4o-mini',
-                textPrompt: 'Output rule: output only the verification code characters or the arithmetic result, with no punctuation and no prefix.'
+                textPrompt: 'Extract the captcha from the image and output only the final answer. If unclear, output nothing.'
             },
             gemini: {
                 baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
                 apiKey: '',
                 model: 'gemini-2.5-flash-lite',
-                textPrompt: 'Output rule: output only the verification code characters or the arithmetic result, with no punctuation and no prefix.'
+                textPrompt: 'Extract the captcha from the image and output only the final answer. If unclear, output nothing.'
             }
         };
 
@@ -60,7 +60,7 @@
         static #data = null;
         static load() {
             try {
-                const stored = GM_getValue(this.KEY) ?? GM_getValue('ai_captcha_config_v3'); // 兼容旧版本键名
+                const stored = GM_getValue(this.KEY);
                 this.#data = stored ? { ...this.DEFAULTS, ...JSON.parse(stored) } : { ...this.DEFAULTS };
                 // 深度补全，防止新字段丢失
                 ['openai', 'gemini'].forEach(k => this.#data[k] = { ...this.DEFAULTS[k], ...(this.#data[k] || {}) });
@@ -87,12 +87,15 @@
         static async #openai(cfg, imgUrl, prompt) {
             const body = {
                 model: cfg.model,
-                messages: [
-                    { role: 'system', content: prompt },
-                    { role: 'user', content: [{ type: 'image_url', image_url: { url: imgUrl } }] }
-                ],
-                max_tokens: 100,
-                temperature: 0.1
+                messages: [{
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: prompt },
+                        { type: 'image_url', image_url: { url: imgUrl } }
+                    ]
+                }],
+                max_tokens: 16,
+                temperature: 0
             };
             const res = await this.request('POST', cfg.baseUrl, { 'Authorization': `Bearer ${cfg.apiKey}` }, body);
             return res.choices?.[0]?.message?.content?.trim();
@@ -265,16 +268,9 @@
             feedbackEl.style.transition = '0.2s';
 
             try {
-                if (!img.complete) await new Promise(r => img.onload = r);
-                const cvs = document.createElement('canvas');
-                cvs.width = img.naturalWidth || img.width;
-                cvs.height = img.naturalHeight || img.height;
-                cvs.getContext('2d').drawImage(img, 0, 0);
-                const base64 = cvs.toDataURL('image/png');
-
+                const base64 = await this.#captureBase64(img);
                 const res = await AI.solve(base64);
-                if (!res) throw new Error('Empty OCR result');
-                const clean = res.replace(/\s+/g, '');
+                const clean = this.#normalizeResult(res);
 
                 if (inputEl) {
                     inputEl.value = clean;
@@ -334,6 +330,57 @@
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
             }
+        }
+
+        async #captureBase64(img) {
+            if (!img.complete || !img.naturalWidth) await this.#waitForImage(img);
+            const w = img.naturalWidth || img.width;
+            const h = img.naturalHeight || img.height;
+            if (!w || !h) throw new Error('Invalid image size');
+
+            const dpr = window.devicePixelRatio || 1;
+            const cvs = document.createElement('canvas');
+            cvs.width = w * dpr;
+            cvs.height = h * dpr;
+
+            const ctx = cvs.getContext('2d');
+            if (!ctx) throw new Error('No 2D context');
+
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(img, 0, 0, w, h);
+            return cvs.toDataURL('image/png');
+        }
+
+        #normalizeResult(raw) {
+            const compact = (raw || '').replace(/\s+/g, '');
+            if (!compact) throw new Error('Empty OCR result');
+            if (!/^[A-Za-z0-9+\-*/=]+$/.test(compact)) throw new Error('Invalid captcha result');
+
+            let cleaned = compact.replace(/=$/, '');
+            if (!cleaned) throw new Error('Invalid captcha result');
+
+            if (/^\d+[+\-*/]\d+/.test(cleaned)) {
+                try {
+                    const val = Function(`return ${cleaned}`)();
+                    if (Number.isFinite(val)) cleaned = String(val);
+                } catch {}
+            }
+            return cleaned;
+        }
+
+        #waitForImage(img) {
+            if (img.complete && img.naturalWidth) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    img.removeEventListener('load', onLoad);
+                    img.removeEventListener('error', onError);
+                };
+                const onLoad = () => { cleanup(); resolve(); };
+                const onError = () => { cleanup(); reject(new Error('Image load error')); };
+                img.addEventListener('load', onLoad, { once: true });
+                img.addEventListener('error', onError, { once: true });
+            });
         }
     }
 
