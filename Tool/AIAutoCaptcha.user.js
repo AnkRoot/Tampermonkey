@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.AIAutoCaptcha
 // @description  智能填表。支持 OpenAI/Gemini。自动处理文本验证码；按住 [Alt+点击] 图片强制识别并填入验证码框（找不到则输出到控制台）。
-// @version      3.1.0
+// @version      3.1.1
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -32,7 +32,7 @@
             gemini: {
                 baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
                 apiKey: '',
-                model: 'gemini-2.0-flash-lite',
+                model: 'gemini-2.5-flash-lite',
                 textPrompt: 'Output rule: output only the verification code characters or the arithmetic result, with no punctuation and no prefix.'
             }
         };
@@ -94,7 +94,7 @@
                 max_tokens: 100,
                 temperature: 0.1
             };
-            const res = await this.#req(cfg.baseUrl, { 'Authorization': `Bearer ${cfg.apiKey}` }, body);
+            const res = await this.request('POST', cfg.baseUrl, { 'Authorization': `Bearer ${cfg.apiKey}` }, body);
             return res.choices?.[0]?.message?.content?.trim();
         }
 
@@ -103,19 +103,63 @@
             const body = {
                 contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'image/png', data: b64 } }] }]
             };
-            const res = await this.#req(url, {}, body);
+            const res = await this.request('POST', url, {}, body);
             return res.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
         }
 
-        static #req(url, headers, body) {
+        static request(method, url, headers, body) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
-                    method: 'POST', url, headers: { 'Content-Type': 'application/json', ...headers },
-                    data: JSON.stringify(body), timeout: 30000,
-                    onload: r => (r.status >= 200 && r.status < 300) ? resolve(JSON.parse(r.responseText)) : reject(new Error(`HTTP ${r.status}`)),
+                    method, url, timeout: 30000,
+                    headers: body === undefined ? { ...headers } : { 'Content-Type': 'application/json', ...headers },
+                    data: body === undefined ? undefined : JSON.stringify(body),
+                    onload: r => {
+                        if (r.status >= 200 && r.status < 300) {
+                            try { resolve(JSON.parse(r.responseText)); }
+                            catch { reject(new Error('Bad JSON')); }
+                            return;
+                        }
+                        reject(new Error(`HTTP ${r.status}`));
+                    },
                     onerror: () => reject(new Error('Network Error'))
                 });
             });
+        }
+    }
+
+    class ModelService {
+        static async list(provider, overrides = {}) {
+            const conf = Config.get();
+            const cfg = { ...conf[provider], ...overrides };
+            if (!cfg.apiKey) throw new Error('No API Key');
+            return provider === 'gemini' ? this.#listGemini(cfg) : this.#listOpenAI(cfg);
+        }
+
+        static async #listOpenAI(cfg) {
+            const url = this.#openaiListUrl(cfg.baseUrl);
+            const res = await AI.request('GET', url, { 'Authorization': `Bearer ${cfg.apiKey}` });
+            const models = (res.data || []).map(m => m.id).filter(Boolean);
+            if (!models?.length) throw new Error('No models returned');
+            return models;
+        }
+
+        static #openaiListUrl(url) {
+            const cleaned = url.replace(/\/v1\/.*$/, '/v1/models');
+            return cleaned.includes('/models') ? cleaned : `${cleaned}/models`;
+        }
+
+        static async #listGemini(cfg) {
+            const url = this.#geminiListUrl(cfg.baseUrl, cfg.apiKey);
+            const res = await AI.request('GET', url, {});
+            const models = (res.models || []).map(m => m.name?.split('/').pop()).filter(Boolean);
+            if (!models?.length) throw new Error('No models returned');
+            return models;
+        }
+
+        static #geminiListUrl(baseUrl, key) {
+            const base = baseUrl.replace(/\/:generateContent.*$/, '').replace(/\/models\/?$/, '/models');
+            const root = base.includes('/models') ? base : `${base}/models`;
+            return `${root}?key=${key}`;
         }
     }
 
@@ -132,7 +176,7 @@
 
         #init() {
             GM_registerMenuCommand('⚙️ Settings', () => SettingsUI.open());
-            
+
             setInterval(() => this.#scan(), 1500);
 
             // Alt+点击图片：强制识别；能定位到验证码输入框则直接填入
@@ -215,7 +259,7 @@
                 this.#processed.delete(img);
                 return;
             }
-            
+
             const originStyle = feedbackEl.style.cssText;
             feedbackEl.style.outline = '3px solid #3B82F6';
             feedbackEl.style.transition = '0.2s';
@@ -299,7 +343,7 @@
             const host = document.createElement('div');
             const shadow = host.attachShadow({mode:'closed'});
             const conf = Config.get();
-            
+
             shadow.innerHTML = `
                 <style>
                     .box { position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; justify-content:center; align-items:center; z-index:999999; }
@@ -308,30 +352,41 @@
                     label { font-size:12px; font-weight:bold; color:#555; display:block; margin-top:8px; }
                     .btns { text-align:right; margin-top:15px; }
                     button { padding:8px 16px; cursor:pointer; border-radius:4px; border:1px solid #ccc; }
+                    .model-row { display:flex; gap:8px; align-items:center; margin:5px 0 8px; }
+                    .model-row select { flex:1; margin:0; height:32px; }
+                    .model-row button { margin:0; height:32px; padding:0 14px; white-space:nowrap; }
+                    .model-help { font-size:11px; color:#777; margin:4px 0 8px; }
                     h3 { margin:0 0 15px; font-size:16px; }
                 </style>
                 <div class="box">
                     <div class="pan">
                         <h3>AI Captcha Settings</h3>
-                        
+
                         <label>Provider</label>
                         <select id="prov">
                             <option value="openai">OpenAI / Custom</option>
                             <option value="gemini">Gemini</option>
                         </select>
-                        
+
                         <label>API Base URL</label>
                         <input id="url" placeholder="https://api.openai.com/v1/chat/completions">
-                        
+
                         <label>API Key</label>
                         <input type="password" id="key" placeholder="sk-...">
-                        
-                        <label>Model</label>
-                        <input id="model" placeholder="gpt-4o-mini">
-                        
+
+                        <label>Model（优先接口选择，无则手填）</label>
+                        <div class="model-row">
+                            <select id="modelList">
+                                <option value="">接口加载后可选</option>
+                            </select>
+                            <button id="fetchModels" type="button">拉取模型</button>
+                        </div>
+                        <input id="model" placeholder="例如：gpt-4o-mini">
+                        <div class="model-help">接口无返回或需自定义时，直接手填。</div>
+
                         <label>Text Recognition Prompt</label>
                         <textarea id="tprompt" rows="3" placeholder="请用自然语言描述：只输出识别结果；不确定就输出空。"></textarea>
-                        
+
                         <div class="btns">
                             <button id="save" style="background:#2563EB;color:#fff;border:none;">Save</button>
                             <button id="close">Close</button>
@@ -349,11 +404,47 @@
                 $('#model').value = c.model;
                 $('#tprompt').value = c.textPrompt;
             };
-            
+            const renderModelOptions = list => {
+                const sel = $('#modelList');
+                sel.innerHTML = '<option value="">接口加载后可选</option>';
+                list.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.textContent = m;
+                    if (m === $('#model').value) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+            };
+            const fetchModels = async () => {
+                const btn = $('#fetchModels');
+                const sel = $('#modelList');
+                btn.disabled = true;
+                btn.textContent = '加载中';
+                sel.innerHTML = '<option value="">加载中...</option>';
+                try {
+                    const p = $('#prov').value;
+                    const list = await ModelService.list(p, { baseUrl: $('#url').value, apiKey: $('#key').value });
+                    renderModelOptions(list);
+                } catch (err) {
+                    alert(`拉取模型失败：${err.message}`);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '拉取模型';
+                }
+            };
+
             $('#prov').value = conf.provider;
             load(conf.provider);
+            renderModelOptions([]);
 
-            $('#prov').onchange = e => load(e.target.value);
+            $('#prov').onchange = e => {
+                load(e.target.value);
+                renderModelOptions([]);
+            };
+            $('#fetchModels').onclick = fetchModels;
+            $('#modelList').onchange = e => {
+                if (e.target.value) $('#model').value = e.target.value;
+            };
             $('#close').onclick = () => host.remove();
             $('#save').onclick = () => {
                 const p = $('#prov').value;
@@ -368,7 +459,6 @@
                 };
                 Config.save(newC);
                 host.remove();
-                alert('Saved!');
             };
         }
     }
