@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         BiliQualityPlus - 画质增强 & 解锁
+// @name         !.BiliQualityPlus - 画质增强 & 解锁
 // @namespace    https://010314.xyz/
-// @version      0.0.1
+// @version      0.0.2
 // @description  1. 解锁大会员画质试用（4K/8K/杜比）并自动续期；2. 自动切换视频/直播为最高画质（支持主/备画质）；3. 智能解码切换；4. Hi-Res/杜比音效自动开启；5. 独立的设置面板。
 // @author       ank
 // @license      AGPL-3.0
@@ -45,18 +45,37 @@
       backupQuality: '1080P',
       liveQuality: 'max',
       codecPriority: 'HEVC',
+      decodeSettingEnabled: true,
+      liveCodecPriority: 'default',
       unlockTrial: true,
       unlockUA: true,
+      unlockMarker: true,
+      unlockHDR: true,
+      preserveTouchPoints: true,
+      disableHDROption: false,
       enableHiRes: true,
       enableDolby: true,
       allowDowngrade: true,
       doubleCheck: true,
+      qualityDoubleCheck: true,
+      liveQualityDoubleCheck: true,
+      maxChecks: 10,
+      idleIntervalMs: 2000,
+      afterChangeDelayMs: 4000,
       waitOnQualitySwitch: false,
       useBackupQuality: true, // 新增：是否启用备用画质回退
+      useHighestQualityFallback: true,
       persistPlayerSettings: true,
+      injectQualityButton: false,
+      takeOverQualityControl: false,
       showButton: true,
       consoleLog: false,
+      // --- 开发者设置 ---
+      vipStatusOverride: 'auto', // auto | normal | vip（仅影响脚本识别，不绕过权限）
+      noLoginMode: false,
+      allowFreeVipQualities: false,
       // --- Session Cache ---
+      isLogin: false,
       isVip: false,
       vipStatusChecked: false,
       activePanelTab: 'primary' // 'primary' or 'backup'
@@ -103,11 +122,36 @@
         try {
           Object.defineProperty(navigator, 'userAgent', { value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15", configurable: true });
           Object.defineProperty(navigator, 'platform', { value: "MacIntel", configurable: true });
+          if (!config.get('preserveTouchPoints')) {
+            const detectPointerType = () => {
+              try {
+                const hasFinePointer = window.matchMedia('(pointer: fine)').matches;
+                const hasCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+                const anyHover = window.matchMedia('(any-hover: hover)').matches;
+                const supportsTouch = ('ontouchstart' in window) || (Number(navigator.maxTouchPoints) || 0) > 0;
+                return { isMouseDevice: hasFinePointer && anyHover, isTouchDevice: hasCoarsePointer && supportsTouch };
+              } catch { return { isMouseDevice: true, isTouchDevice: false }; }
+            };
+            const pointer = detectPointerType();
+            Logger.log('Pointer Detect:', pointer);
+            if (pointer.isMouseDevice && !pointer.isTouchDevice) {
+              try { Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true }); Logger.log('maxTouchPoints set to 0'); }
+              catch (e) { Logger.warn('maxTouchPoints spoof failed', e); }
+            }
+          }
         } catch (e) { Logger.warn('UA Spoof failed', e); }
       }
       try {
-        localStorage.setItem('bilibili_player_force_DolbyAtmos&8K', '1');
-        localStorage.setItem('bilibili_player_force_hdr', '1');
+        const baseKey = 'bilibili_player_force_DolbyAtmos&8K';
+        const hdrKey = `${baseKey}&HDR`;
+        localStorage.removeItem(baseKey);
+        localStorage.removeItem(hdrKey);
+        localStorage.removeItem('bilibili_player_force_hdr');
+        if (config.get('unlockMarker')) {
+          localStorage.setItem(baseKey, '1');
+          if (config.get('unlockHDR')) localStorage.setItem(hdrKey, '1');
+        }
+        if (config.get('unlockHDR')) localStorage.setItem('bilibili_player_force_hdr', '1');
       } catch (e) { }
     }
 
@@ -138,6 +182,17 @@
   }
 
   class Utils {
+    static hasCookie(name) { try { return new RegExp(`(?:^|;\\s*)${name}=`).test(document.cookie || ''); } catch { return false; } }
+    static isLoggedIn() {
+      try { if (unsafeWindow.__INITIAL_STATE__?.loginInfo?.isLogin === true) return true; } catch { }
+      if (Utils.hasCookie('DedeUserID') || Utils.hasCookie('SESSDATA') || Utils.hasCookie('bili_jct')) return true;
+      const hasAvatar = !!document.querySelector('.header-avatar-wrap,.v-popover-wrap.header-avatar-wrap,.mini-header__avatar');
+      const hasLogin = !!document.querySelector('.header-login-entry,.go-login-btn,.mini-header__login,.right-entry__outside-go-login');
+      if (hasAvatar && !hasLogin) return true;
+      if (hasLogin && !hasAvatar) return false;
+      return false;
+    }
+    static isVip() { return !!document.querySelector('.bili-avatar-icon.bili-avatar-right-icon.bili-avatar-icon-big-vip,.vip-icon--big'); }
     static waitFor(selector, timeout = 5000) {
       return new Promise(resolve => {
         const el = document.querySelector(selector);
@@ -170,13 +225,22 @@
     }
 
     async checkVipStatus() {
-      if (config.getSession('vipStatusChecked')) return;
-      await Utils.waitFor('.bili-avatar-icon,.header-avatar-wrap'); // 等待头像区域加载
-      const vipElement = document.querySelector(".bili-avatar-icon.bili-avatar-right-icon.bili-avatar-icon-big-vip");
-      const isVip = !!vipElement;
+      const checked = config.getSession('vipStatusChecked');
+      const noLoginMode = !!config.get('noLoginMode');
+      const vipStatusOverride = String(config.get('vipStatusOverride') || 'auto');
+      if (!checked && !noLoginMode) await Utils.waitFor('.header-avatar-wrap,.v-popover-wrap.header-avatar-wrap,.header-login-entry,.go-login-btn,.mini-header__login', 5000);
+      let isLogin = noLoginMode ? false : Utils.isLoggedIn();
+      let isVip = (!isLogin || noLoginMode) ? false : Utils.isVip();
+      if (!noLoginMode && vipStatusOverride !== 'auto') {
+        if (vipStatusOverride === 'vip') { isLogin = true; isVip = true; }
+        else if (vipStatusOverride === 'normal') { isLogin = true; isVip = false; }
+      }
+      const changed = !checked || isLogin !== config.getSession('isLogin') || isVip !== config.getSession('isVip');
+      if (!changed) return;
+      config.setSession('isLogin', isLogin);
       config.setSession('isVip', isVip);
       config.setSession('vipStatusChecked', true);
-      Logger.log('VIP Status Check:', isVip ? 'Yes' : 'No');
+      Logger.log('User Status Check:', isLogin ? (isVip ? 'VIP' : 'Normal') : 'Guest');
     }
 
     async switchQuality() {
@@ -188,26 +252,33 @@
       try { currentQ = Number(player.getQuality?.()?.nowQ) || 0; } catch { currentQ = 0; }
       let rawList = [];
       try { rawList = player.getSupportedQualityList() || []; } catch { return false; }
-      const availableList = Array.isArray(rawList) ? rawList.map(q => Number(q?.qn ?? q)).filter(q => Number.isFinite(q) && q > 0) : [];
+      const availableListRaw = Array.isArray(rawList) ? rawList.map(q => Number(q?.qn ?? q)).filter(q => Number.isFinite(q) && q > 0) : [];
+      const availableList = config.get('disableHDROption') ? availableListRaw.filter(q => ![CONSTANTS.Q_MAP.Dolby, CONSTANTS.Q_MAP.HDR].includes(q)) : availableListRaw;
       if (!availableList.length) return false;
 
       const primarySetting = config.get('primaryQuality');
       const backupSetting = config.get('backupQuality');
       const isVip = config.getSession('isVip');
+      const isLogin = config.getSession('isLogin');
+      const noLoginMode = !!config.get('noLoginMode') || !isLogin;
+      const allowFreeVipQualities = !!config.get('allowFreeVipQualities');
+      const freeVipSet = (!isVip && allowFreeVipQualities && !noLoginMode) ? this.#getFreeVipQualitySet() : new Set();
+      const isVipBlocked = (q) => CONSTANTS.VIP_QUALITIES.includes(q) && !isVip && !freeVipSet.has(q);
+      const candidateList = noLoginMode ? availableList.filter(q => q <= CONSTANTS.Q_MAP['1080P']) : availableList;
 
-      Logger.log('Video Quality Check:', { current: currentQ, available: availableList, primary: primarySetting, backup: backupSetting, isVip });
+      Logger.log('Video Quality Check:', { current: currentQ, available: candidateList, primary: primarySetting, backup: backupSetting, isVip, isLogin, noLoginMode, allowFreeVipQualities, freeVip: [...freeVipSet] });
 
       const findTargetQ = (setting) => {
-        if (setting === 'max') return (isVip ? availableList : availableList.filter(q => !CONSTANTS.VIP_QUALITIES.includes(q))).reduce((m, q) => Math.max(m, q), 0);
+        if (setting === 'max') return candidateList.filter(q => !isVipBlocked(q)).reduce((m, q) => Math.max(m, q), 0);
         const wantQ = CONSTANTS.Q_MAP[setting] || 0;
-        if (availableList.includes(wantQ)) return wantQ;
+        if (candidateList.includes(wantQ)) return wantQ;
         return 0;
       };
 
       let targetQ = findTargetQ(primarySetting);
 
       // 如果首选画质是VIP画质但用户不是VIP，则启用回退逻辑
-      if (CONSTANTS.VIP_QUALITIES.includes(targetQ) && !isVip) {
+      if (isVipBlocked(targetQ)) {
         Logger.log(`Primary quality ${targetQ} is VIP-only. Fallback initiated.`);
         if (config.get('useBackupQuality')) {
           targetQ = findTargetQ(backupSetting);
@@ -215,11 +286,9 @@
           targetQ = findTargetQ('max'); // 回退到非VIP的最高画质
         }
       }
-      
+
       // 如果经过主备流程后仍然没找到（比如备用也是VIP画质），则最后回退到可用的最高画质
-      if (targetQ === 0 || (CONSTANTS.VIP_QUALITIES.includes(targetQ) && !isVip)) {
-          targetQ = findTargetQ('max');
-      }
+      if (targetQ === 0 || isVipBlocked(targetQ)) targetQ = config.get('useHighestQualityFallback') ? findTargetQ('max') : 0;
 
       if (!Number.isFinite(targetQ) || targetQ <= 0) return false;
 
@@ -240,6 +309,44 @@
       return false;
     }
 
+    #getFreeVipQualitySet() {
+      const set = new Set();
+      try {
+        const TRIAL_KEYWORDS = ['试用', '限免', '免费', '试看', '体验'];
+        const isFree = (text) => TRIAL_KEYWORDS.some(k => String(text || '').includes(k));
+        const guessQn = (item, text) => {
+          const attrs = ['data-qn', 'data-value', 'data-quality', 'data-id', 'data-def'];
+          for (const key of attrs) {
+            const val = Number(item?.getAttribute?.(key));
+            if (Number.isFinite(val) && val > 0) return val;
+          }
+          const t = String(text || '');
+          if (t.includes('8K') || /8k/i.test(t)) return CONSTANTS.Q_MAP['8K'];
+          if (t.includes('4K') || /4k/i.test(t)) return CONSTANTS.Q_MAP['4K'];
+          if (t.includes('杜比视界') || /dolby/i.test(t)) return CONSTANTS.Q_MAP.Dolby;
+          if (t.includes('HDR')) return CONSTANTS.Q_MAP.HDR;
+          if ((t.includes('60帧') || /60fps/i.test(t) || /p60/i.test(t)) && t.includes('1080')) return CONSTANTS.Q_MAP['1080P60'];
+          if (t.includes('高码率') || t.includes('1080+') || t.includes('1080P+')) return CONSTANTS.Q_MAP['1080P+'];
+          if (t.includes('1080')) return CONSTANTS.Q_MAP['1080P'];
+          if (t.includes('720')) return CONSTANTS.Q_MAP['720P'];
+          if (t.includes('480')) return CONSTANTS.Q_MAP['480P'];
+          if (t.includes('360')) return CONSTANTS.Q_MAP['360P'];
+          return 0;
+        };
+        const items = Array.from(document.querySelectorAll('.bpx-player-ctrl-quality-menu-item')).filter(Boolean);
+        for (const item of items) {
+          const badge = item.querySelector('.bpx-player-ctrl-quality-badge-bigvip');
+          if (!badge) continue;
+          const text = (item.textContent || '').trim();
+          const badgeText = (badge.textContent || '').trim();
+          if (!isFree(text) && !isFree(badgeText)) continue;
+          const qn = guessQn(item, text);
+          if (qn > 0) set.add(qn);
+        }
+      } catch { return set; }
+      return set;
+    }
+
     #waitForQualityToast(player, wasPlaying) {
       const timer = setInterval(() => {
         const toasts = Array.from(document.querySelectorAll('.bpx-player-toast-text'));
@@ -252,6 +359,7 @@
     }
 
     switchCodec() {
+      if (!config.get('decodeSettingEnabled')) return false;
       const priority = config.get('codecPriority');
       if (priority === 'default') return false;
       const keywords = CONSTANTS.TEXT_MAP[priority];
@@ -329,7 +437,32 @@
       }
       return false;
     }
-    switchCodec() { return false; }
+	    switchCodec() {
+	      if (!config.get('decodeSettingEnabled')) return false;
+	      const priority = config.get('liveCodecPriority');
+	      if (!priority || priority === 'default') return false;
+	      const keywords = CONSTANTS.TEXT_MAP[priority];
+	      if (!keywords) return false;
+
+      const containers = [
+        document.querySelector('.YccudlUCmLKcUTg_yzKN'),
+        document.querySelector('[class*="decode"] ul'),
+        document.querySelector('[class*="Decode"] ul'),
+      ].filter(Boolean);
+	      for (const container of containers) {
+	        const items = Array.from(container.querySelectorAll('li')).filter(Boolean);
+	        for (const item of items) {
+	          const text = (item.textContent || '').trim();
+	          if (!text || !Utils.textMatch(text, keywords)) continue;
+	          const selectedClasses = ['active', 'selected', 'on', 'is-active', 'fG2r2piYghHTQKQZF8bl'];
+	          if (selectedClasses.some(cls => item.classList.contains(cls)) || item.getAttribute('aria-selected') === 'true') return false;
+	          Logger.log(`Switching Live Codec to ${priority}`);
+	          Utils.click(item);
+	          return true;
+	        }
+	      }
+      return false;
+    }
     switchAudio() { return false; }
     tryClickTrial() { return false; }
   }
@@ -341,11 +474,15 @@
     #maxChecks = 10;
     #interval = 2000;
     #taskId = 0;
-    constructor(isLive) { this.#handler = isLive ? new LiveHandler() : new VideoHandler(); }
+    #isLive = false;
+    constructor(isLive) { this.#isLive = !!isLive; this.#handler = isLive ? new LiveHandler() : new VideoHandler(); }
     start(taskId) {
       this.#taskId = taskId;
       this.#checkCount = 0;
-      this.#maxChecks = config.get('doubleCheck') ? 10 : 2;
+      const has = (key) => typeof GM_getValue(key, undefined) !== 'undefined';
+      const enabled = this.#isLive ? (has('liveQualityDoubleCheck') ? config.get('liveQualityDoubleCheck') : config.get('doubleCheck')) : (has('qualityDoubleCheck') ? config.get('qualityDoubleCheck') : config.get('doubleCheck'));
+      this.#maxChecks = enabled ? Math.max(1, Number(config.get('maxChecks')) || 10) : 2;
+      this.#interval = Math.max(200, Number(config.get('idleIntervalMs')) || 2000);
       this.loop();
     }
     async loop() {
@@ -360,7 +497,7 @@
       const aChanged = this.#handler.switchAudio();
       if (this.#checkCount < this.#maxChecks) {
         this.#checkCount++;
-        let nextDelay = (qChanged || cChanged || aChanged) ? 4000 : this.#interval;
+        let nextDelay = (qChanged || cChanged || aChanged) ? Math.max(200, Number(config.get('afterChangeDelayMs')) || 4000) : this.#interval;
         this.#timer = setTimeout(() => this.loop(), nextDelay);
       } else {
         Logger.log('RetryGuard finished.');
@@ -374,8 +511,34 @@
     init() {
       this.registerMenu();
       if (config.get('showButton')) this.renderFloatingButton();
+      this.applyPageTweaks();
     }
     registerMenu() { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('⚙️ 打开设置面板', () => this.togglePanel()); }
+    applyPageTweaks() {
+      if (document.readyState === 'loading' || !document.body) return void document.addEventListener('DOMContentLoaded', () => this.applyPageTweaks(), { once: true });
+      if (config.get('takeOverQualityControl') && location.host !== 'live.bilibili.com') {
+        const styleId = 'biliqualityplus-takeover-style';
+        if (!document.getElementById(styleId)) {
+          const style = document.createElement('style');
+          style.id = styleId;
+          style.textContent = '.bpx-player-ctrl-quality,.bpx-player-ctrl-btn.bpx-player-ctrl-quality{display:none!important}';
+          (document.head || document.documentElement).appendChild(style);
+        }
+      }
+      if (config.get('injectQualityButton') && location.host !== 'live.bilibili.com') this.#injectSettingsButton();
+    }
+    async #injectSettingsButton() {
+      if (document.querySelector('.biliqualityplus-injected-btn')) return;
+      const container = await Utils.waitFor('.bpx-player-control-wrap', 8000);
+      if (!container || document.querySelector('.biliqualityplus-injected-btn')) return;
+      const btn = document.createElement('div');
+      btn.className = 'biliqualityplus-injected-btn';
+      btn.textContent = '⚙️';
+      btn.title = 'BiliQualityPlus 设置';
+      btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:8px;border-radius:4px;background:rgba(0,161,214,0.15);color:#00a1d6;cursor:pointer;user-select:none;font-size:16px;line-height:1';
+      btn.onclick = () => this.togglePanel();
+      container.appendChild(btn);
+    }
     renderFloatingButton({ hideTrigger = false } = {}) {
       if (!document.body || this.#shadowRoot) return;
       this.#host = document.createElement('div');
@@ -395,13 +558,14 @@
         .tab-content{display:none}.tab-content.active{display:block}
         .vip-status{padding:5px;text-align:center;border-radius:4px;margin-bottom:10px;font-weight:bold}
         .vip-status.yes{background:#fce4ec;color:#f50057}.vip-status.no{background:#f0f0f0;color:#666}
+        details{margin-top:8px}summary{cursor:pointer;color:#00A1D6;font-weight:bold;outline:none}
       `;
       const qualityOptions = Object.keys(CONSTANTS.Q_MAP).map(q => `<option value="${q}">${q}</option>`).join('');
       this.#shadowRoot.innerHTML = `<style>${style}</style>
         <div class="trigger" id="btn">⚙️</div>
         <div class="panel" id="panel">
-	            <h3>BiliQualityPlus v0.0.1</h3>
-            <div class="vip-status" id="vip-status">VIP状态检测中...</div>
+	            <h3>BiliQualityPlus v0.0.2</h3>
+            <div class="vip-status" id="vip-status">账号状态检测中...</div>
             <div class="tabs">
                 <div class="tab active" data-tab="primary">首选画质</div>
                 <div class="tab" data-tab="backup">备用画质</div>
@@ -415,16 +579,43 @@
             </div>
             <hr style="border:0;border-top:1px solid #eee;margin:8px 0">
             <div class="row"><span>直播画质</span><select id="liveQuality"><option value="max">最高</option><option value="原画">原画</option><option value="蓝光">蓝光</option><option value="超清">超清</option></select></div>
-            <div class="row"><span>解码策略</span><select id="codecPriority"><option value="HEVC">HEVC</option><option value="AVC">AVC</option><option value="AV1">AV1</option><option value="default">默认</option></select></div>
+            <div class="row"><label><input type="checkbox" id="decodeSettingEnabled">启用解码设置</label></div>
+            <div class="row"><span>视频解码</span><select id="codecPriority"><option value="HEVC">HEVC</option><option value="AVC">AVC</option><option value="AV1">AV1</option><option value="default">默认</option></select></div>
+            <div class="row"><span>直播解码</span><select id="liveCodecPriority"><option value="HEVC">HEVC</option><option value="AVC">AVC</option><option value="AV1">AV1</option><option value="default">默认</option></select></div>
             <div class="row"><label><input type="checkbox" id="enableHiRes">启用Hi-Res</label></div>
             <div class="row"><label><input type="checkbox" id="enableDolby">启用杜比</label></div>
+            <details>
+              <summary>高级设置</summary>
+              <div class="row"><label><input type="checkbox" id="useHighestQualityFallback">备选缺失回退最高</label></div>
+              <div class="row"><label><input type="checkbox" id="qualityDoubleCheck">视频画质二次验证</label></div>
+              <div class="row"><label><input type="checkbox" id="liveQualityDoubleCheck">直播画质二次验证</label></div>
+              <div class="row"><span>最大检查轮次</span><input type="number" id="maxChecks" min="1" max="50" step="1" style="width:90px"></div>
+              <div class="row"><span>空闲检查间隔(ms)</span><input type="number" id="idleIntervalMs" min="200" max="20000" step="100" style="width:90px"></div>
+              <div class="row"><span>切换后等待(ms)</span><input type="number" id="afterChangeDelayMs" min="200" max="20000" step="100" style="width:90px"></div>
+              <div class="row"><label><input type="checkbox" id="injectQualityButton">注入设置按钮</label></div>
+              <div class="row"><label><input type="checkbox" id="takeOverQualityControl">隐藏原生清晰度按钮</label></div>
+            </details>
+            <details>
+              <summary>开发者设置</summary>
+              <div class="row"><span>模拟会员状态</span><select id="vipStatusOverride"><option value="auto">默认</option><option value="normal">普通</option><option value="vip">会员</option></select></div>
+              <div class="row"><label><input type="checkbox" id="noLoginMode">未登录模式(最高1080P)</label></div>
+              <div class="row"><label><input type="checkbox" id="allowFreeVipQualities">非会员允许限免画质</label></div>
+            </details>
             <hr style="border:0;border-top:1px solid #eee;margin:8px 0">
-            <div class="row"><label><input type="checkbox" id="unlockTrial">解锁试用(刷新)</label></div>
-            <div class="row"><label><input type="checkbox" id="allowDowngrade">允许画质降级</label></div>
-            <div class="row"><label><input type="checkbox" id="waitOnQualitySwitch">等待切换完成</label></div>
-            <div class="row"><label><input type="checkbox" id="persistPlayerSettings">持久化播放器设置</label></div>
-            <div class="row"><label><input type="checkbox" id="showButton">显示悬浮球</label></div>
-            <button class="btn" id="save">保存并刷新页面</button>
+	            <div class="row"><label><input type="checkbox" id="unlockTrial">解锁试用(刷新)</label></div>
+	            <details>
+	              <summary>解锁/兼容</summary>
+	              <div class="row"><label><input type="checkbox" id="unlockUA">UA伪装(刷新)</label></div>
+	              <div class="row"><label><input type="checkbox" id="preserveTouchPoints">保留触控点(触屏不失效)</label></div>
+	              <div class="row"><label><input type="checkbox" id="unlockMarker">写入杜比/8K标记(刷新)</label></div>
+	              <div class="row"><label><input type="checkbox" id="unlockHDR">写入HDR标记(刷新)</label></div>
+	              <div class="row"><label><input type="checkbox" id="disableHDROption">过滤HDR/杜比视界画质</label></div>
+	            </details>
+	            <div class="row"><label><input type="checkbox" id="allowDowngrade">允许画质降级</label></div>
+	            <div class="row"><label><input type="checkbox" id="waitOnQualitySwitch">等待切换完成</label></div>
+	            <div class="row"><label><input type="checkbox" id="persistPlayerSettings">持久化播放器设置</label></div>
+	            <div class="row"><label><input type="checkbox" id="showButton">显示悬浮球</label></div>
+	            <button class="btn" id="save">保存并刷新页面</button>
         </div>
       `;
       this.#bindEvents();
@@ -452,22 +643,48 @@
       $('backupQuality').value = config.get('backupQuality');
       $('useBackupQuality').checked = config.get('useBackupQuality');
       $('liveQuality').value = config.get('liveQuality');
+      $('decodeSettingEnabled').checked = config.get('decodeSettingEnabled');
       $('codecPriority').value = config.get('codecPriority');
-      $('enableHiRes').checked = config.get('enableHiRes');
-      $('enableDolby').checked = config.get('enableDolby');
-      $('unlockTrial').checked = config.get('unlockTrial');
-      $('allowDowngrade').checked = config.get('allowDowngrade');
-      $('waitOnQualitySwitch').checked = config.get('waitOnQualitySwitch');
-      $('persistPlayerSettings').checked = config.get('persistPlayerSettings');
+	      $('liveCodecPriority').value = config.get('liveCodecPriority');
+	      $('enableHiRes').checked = config.get('enableHiRes');
+	      $('enableDolby').checked = config.get('enableDolby');
+	      $('unlockTrial').checked = config.get('unlockTrial');
+	      $('unlockUA').checked = config.get('unlockUA');
+	      $('preserveTouchPoints').checked = config.get('preserveTouchPoints');
+	      $('unlockMarker').checked = config.get('unlockMarker');
+	      $('unlockHDR').checked = config.get('unlockHDR');
+	      $('disableHDROption').checked = config.get('disableHDROption');
+	      $('allowDowngrade').checked = config.get('allowDowngrade');
+	      $('waitOnQualitySwitch').checked = config.get('waitOnQualitySwitch');
+	      $('persistPlayerSettings').checked = config.get('persistPlayerSettings');
+      const has = (key) => typeof GM_getValue(key, undefined) !== 'undefined';
+      const legacyDoubleCheck = config.get('doubleCheck');
+      $('qualityDoubleCheck').checked = has('qualityDoubleCheck') ? config.get('qualityDoubleCheck') : legacyDoubleCheck;
+      $('liveQualityDoubleCheck').checked = has('liveQualityDoubleCheck') ? config.get('liveQualityDoubleCheck') : legacyDoubleCheck;
+      $('maxChecks').value = String(config.get('maxChecks'));
+      $('idleIntervalMs').value = String(config.get('idleIntervalMs'));
+      $('afterChangeDelayMs').value = String(config.get('afterChangeDelayMs'));
+      $('useHighestQualityFallback').checked = config.get('useHighestQualityFallback');
+      $('injectQualityButton').checked = config.get('injectQualityButton');
+      $('takeOverQualityControl').checked = config.get('takeOverQualityControl');
+      $('vipStatusOverride').value = String(config.get('vipStatusOverride') || 'auto');
+      $('noLoginMode').checked = config.get('noLoginMode');
+      $('allowFreeVipQualities').checked = config.get('allowFreeVipQualities');
       $('showButton').checked = config.get('showButton');
       this.#shadowRoot.querySelector(`.tab[data-tab="${config.get('activePanelTab')}"]`)?.click();
-      
+
       // VIP Status Display
-      if(config.getSession('vipStatusChecked')) {
-          const isVip = config.getSession('isVip');
-          const statusEl = $('vip-status');
-          statusEl.textContent = isVip ? '大会员用户' : '普通用户';
-          statusEl.className = `vip-status ${isVip ? 'yes' : 'no'}`;
+      const statusEl = $('vip-status');
+      if (config.getSession('vipStatusChecked')) {
+        const isLogin = config.getSession('isLogin');
+        const isVip = config.getSession('isVip');
+        const override = String(config.get('vipStatusOverride') || 'auto');
+        const prefix = config.get('noLoginMode') ? '(模式) ' : (override !== 'auto' ? '(模拟) ' : '');
+        statusEl.textContent = `${prefix}${!isLogin ? '未登录' : (isVip ? '大会员用户' : '普通用户')}`;
+        statusEl.className = `vip-status ${isLogin && isVip ? 'yes' : 'no'}`;
+      } else {
+        statusEl.textContent = '账号状态检测中...';
+        statusEl.className = 'vip-status no';
       }
 
       // Save
@@ -476,13 +693,31 @@
         config.set('backupQuality', $('backupQuality').value);
         config.set('useBackupQuality', $('useBackupQuality').checked);
         config.set('liveQuality', $('liveQuality').value);
+        config.set('decodeSettingEnabled', $('decodeSettingEnabled').checked);
         config.set('codecPriority', $('codecPriority').value);
-        config.set('enableHiRes', $('enableHiRes').checked);
-        config.set('enableDolby', $('enableDolby').checked);
-        config.set('unlockTrial', $('unlockTrial').checked);
-        config.set('allowDowngrade', $('allowDowngrade').checked);
-        config.set('waitOnQualitySwitch', $('waitOnQualitySwitch').checked);
-        config.set('persistPlayerSettings', $('persistPlayerSettings').checked);
+	        config.set('liveCodecPriority', $('liveCodecPriority').value);
+	        config.set('enableHiRes', $('enableHiRes').checked);
+	        config.set('enableDolby', $('enableDolby').checked);
+	        config.set('unlockTrial', $('unlockTrial').checked);
+	        config.set('unlockUA', $('unlockUA').checked);
+	        config.set('preserveTouchPoints', $('preserveTouchPoints').checked);
+	        config.set('unlockMarker', $('unlockMarker').checked);
+	        config.set('unlockHDR', $('unlockHDR').checked);
+	        config.set('disableHDROption', $('disableHDROption').checked);
+	        config.set('allowDowngrade', $('allowDowngrade').checked);
+	        config.set('waitOnQualitySwitch', $('waitOnQualitySwitch').checked);
+	        config.set('persistPlayerSettings', $('persistPlayerSettings').checked);
+	        config.set('qualityDoubleCheck', $('qualityDoubleCheck').checked);
+        config.set('liveQualityDoubleCheck', $('liveQualityDoubleCheck').checked);
+        config.set('vipStatusOverride', $('vipStatusOverride').value);
+        config.set('noLoginMode', $('noLoginMode').checked);
+        config.set('allowFreeVipQualities', $('allowFreeVipQualities').checked);
+        config.set('maxChecks', Math.max(1, Number($('maxChecks').value) || 10));
+        config.set('idleIntervalMs', Math.max(200, Number($('idleIntervalMs').value) || 2000));
+        config.set('afterChangeDelayMs', Math.max(200, Number($('afterChangeDelayMs').value) || 4000));
+        config.set('useHighestQualityFallback', $('useHighestQualityFallback').checked);
+        config.set('injectQualityButton', $('injectQualityButton').checked);
+        config.set('takeOverQualityControl', $('takeOverQualityControl').checked);
         config.set('showButton', $('showButton').checked);
         location.reload();
       };
@@ -509,7 +744,7 @@
       } else {
         ui.init();
       }
-      
+
       const trigger = () => {
         const newUrl = location.href;
         if (newUrl === this.lastUrl) return;
@@ -519,6 +754,7 @@
         const isLive = location.host === 'live.bilibili.com';
         const guard = new RetryGuard(isLive);
         guard.start(this.currentTaskId);
+        ui.applyPageTweaks();
       };
 
       // Initial run
