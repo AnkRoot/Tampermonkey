@@ -53,6 +53,7 @@
       unlockHDR: true,
       preserveTouchPoints: true,
       disableHDROption: false,
+      disableSSRPlayinfo: false,
       enableHiRes: true,
       enableDolby: true,
       allowDowngrade: true,
@@ -105,6 +106,7 @@
 
     init() {
       this.initStorageHooks();
+      this.initPlayinfoHooks();
       if (config.get('unlockTrial')) {
         const self = this;
         unsafeWindow.setTimeout = function (func, delay, ...args) {
@@ -153,6 +155,33 @@
         }
         if (config.get('unlockHDR')) localStorage.setItem('bilibili_player_force_hdr', '1');
       } catch (e) { }
+    }
+
+    initPlayinfoHooks() {
+      if (!config.get('disableSSRPlayinfo')) return;
+      try {
+        let playinfoShadow = undefined;
+        let playurlSSRShadow = undefined;
+        const define = this.#origDefineProperty;
+        define(unsafeWindow, '__playinfo__', {
+          configurable: true,
+          enumerable: false,
+          get: () => undefined,
+          set: (v) => { playinfoShadow = v; }
+        });
+        define(unsafeWindow, 'playurlSSRData', {
+          configurable: true,
+          enumerable: false,
+          get: () => undefined,
+          set: (v) => { playurlSSRShadow = v; }
+        });
+        // silence unused warnings in some bundlers
+        void playinfoShadow;
+        void playurlSSRShadow;
+        Logger.log('SSR playinfo disabled');
+      } catch (e) {
+        Logger.warn('disableSSRPlayinfo failed', e);
+      }
     }
 
     initStorageHooks() {
@@ -609,6 +638,7 @@
 	              <div class="row"><label><input type="checkbox" id="preserveTouchPoints">保留触控点(触屏不失效)</label></div>
 	              <div class="row"><label><input type="checkbox" id="unlockMarker">写入杜比/8K标记(刷新)</label></div>
 	              <div class="row"><label><input type="checkbox" id="unlockHDR">写入HDR标记(刷新)</label></div>
+	              <div class="row"><label><input type="checkbox" id="disableSSRPlayinfo">禁用SSR播放信息(刷新)</label></div>
 	              <div class="row"><label><input type="checkbox" id="disableHDROption">过滤HDR/杜比视界画质</label></div>
 	            </details>
 	            <div class="row"><label><input type="checkbox" id="allowDowngrade">允许画质降级</label></div>
@@ -651,12 +681,13 @@
 	      $('unlockTrial').checked = config.get('unlockTrial');
 	      $('unlockUA').checked = config.get('unlockUA');
 	      $('preserveTouchPoints').checked = config.get('preserveTouchPoints');
-	      $('unlockMarker').checked = config.get('unlockMarker');
-	      $('unlockHDR').checked = config.get('unlockHDR');
-	      $('disableHDROption').checked = config.get('disableHDROption');
-	      $('allowDowngrade').checked = config.get('allowDowngrade');
-	      $('waitOnQualitySwitch').checked = config.get('waitOnQualitySwitch');
-	      $('persistPlayerSettings').checked = config.get('persistPlayerSettings');
+		  $('unlockMarker').checked = config.get('unlockMarker');
+		  $('unlockHDR').checked = config.get('unlockHDR');
+		  $('disableSSRPlayinfo').checked = config.get('disableSSRPlayinfo');
+		  $('disableHDROption').checked = config.get('disableHDROption');
+		  $('allowDowngrade').checked = config.get('allowDowngrade');
+		  $('waitOnQualitySwitch').checked = config.get('waitOnQualitySwitch');
+		  $('persistPlayerSettings').checked = config.get('persistPlayerSettings');
       const has = (key) => typeof GM_getValue(key, undefined) !== 'undefined';
       const legacyDoubleCheck = config.get('doubleCheck');
       $('qualityDoubleCheck').checked = has('qualityDoubleCheck') ? config.get('qualityDoubleCheck') : legacyDoubleCheck;
@@ -701,12 +732,13 @@
 	        config.set('unlockTrial', $('unlockTrial').checked);
 	        config.set('unlockUA', $('unlockUA').checked);
 	        config.set('preserveTouchPoints', $('preserveTouchPoints').checked);
-	        config.set('unlockMarker', $('unlockMarker').checked);
-	        config.set('unlockHDR', $('unlockHDR').checked);
-	        config.set('disableHDROption', $('disableHDROption').checked);
-	        config.set('allowDowngrade', $('allowDowngrade').checked);
-	        config.set('waitOnQualitySwitch', $('waitOnQualitySwitch').checked);
-	        config.set('persistPlayerSettings', $('persistPlayerSettings').checked);
+			config.set('unlockMarker', $('unlockMarker').checked);
+		    config.set('unlockHDR', $('unlockHDR').checked);
+		    config.set('disableSSRPlayinfo', $('disableSSRPlayinfo').checked);
+		    config.set('disableHDROption', $('disableHDROption').checked);
+		    config.set('allowDowngrade', $('allowDowngrade').checked);
+		    config.set('waitOnQualitySwitch', $('waitOnQualitySwitch').checked);
+		    config.set('persistPlayerSettings', $('persistPlayerSettings').checked);
 	        config.set('qualityDoubleCheck', $('qualityDoubleCheck').checked);
         config.set('liveQualityDoubleCheck', $('liveQualityDoubleCheck').checked);
         config.set('vipStatusOverride', $('vipStatusOverride').value);
