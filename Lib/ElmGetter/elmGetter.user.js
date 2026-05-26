@@ -6,11 +6,11 @@
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0-or-later
 // @grant        none
-// @api          https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.Api.md
-// @doc          https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.Doc.md
-// @test         https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.Test.md
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/ElmGetter/elmGetter.user.js
+// @api          https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/ElmGetter/elmGetter.Api.md
+// @doc          https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/ElmGetter/elmGetter.Doc.md
+// @test         https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/ElmGetter/elmGetter.Test.html
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/ElmGetter/elmGetter.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/ElmGetter/elmGetter.user.js
 // ==/UserScript==
 (function () {
   'use strict';

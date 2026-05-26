@@ -6,10 +6,10 @@
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0
 // @grant        none
-// @doc          https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.Doc.md
-// @test         https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.Test.html
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Lib/QuantumDOM/QuantumDOM.user.js
+// @doc          https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.Doc.md
+// @test         https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.Test.html
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.user.js
 // ==/UserScript==
 
 (function () {

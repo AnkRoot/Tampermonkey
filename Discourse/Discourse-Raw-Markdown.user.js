@@ -9,8 +9,8 @@
 // @match        */t/*
 // @grant        GM_setClipboard
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-Raw-Markdown.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/Discourse-Raw-Markdown.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/Discourse-Raw-Markdown.user.js
 // ==/UserScript==
 
 (function () {

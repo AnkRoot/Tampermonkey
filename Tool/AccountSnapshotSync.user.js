@@ -16,8 +16,8 @@
 // @grant        GM_setClipboard
 // @connect      *
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/AccountSnapshotSync.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/AccountSnapshotSync.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/AccountSnapshotSync.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/AccountSnapshotSync.user.js
 // ==/UserScript==
 (function () {
     "use strict";

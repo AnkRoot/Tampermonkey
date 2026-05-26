@@ -9,8 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_setClipboard
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/LinuxDo-InviteLink-Idle.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/LinuxDo-InviteLink-Idle.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/LinuxDo-InviteLink-Idle.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/LinuxDo-InviteLink-Idle.user.js
 // ==/UserScript==
 
 (async function () {

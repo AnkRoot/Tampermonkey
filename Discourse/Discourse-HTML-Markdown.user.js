@@ -9,8 +9,8 @@
 // @match        */t/*
 // @grant        none
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-HTML-Markdown.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/Discourse-HTML-Markdown.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/Discourse-HTML-Markdown.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/Discourse-HTML-Markdown.user.js
 // ==/UserScript==
 
 (function () {

@@ -9,8 +9,8 @@
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=linux.do
 // @grant        none
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/LINUX.DOCFChallengeJump.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Discourse/LINUX.DOCFChallengeJump.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/LINUX.DOCFChallengeJump.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Discourse/LINUX.DOCFChallengeJump.js
 // ==/UserScript==
 
 ;(function () {

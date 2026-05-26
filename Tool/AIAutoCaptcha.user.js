@@ -12,8 +12,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/AIAutoCaptcha.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/AIAutoCaptcha.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/AIAutoCaptcha.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/AIAutoCaptcha.user.js
 // ==/UserScript==
 
 (function () {

@@ -9,8 +9,8 @@
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @run-at       document-end
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Github/GitHubToolbarBoost.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Github/GitHubToolbarBoost.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Github/GitHubToolbarBoost.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Github/GitHubToolbarBoost.user.js
 // ==/UserScript==
 
 (function () {

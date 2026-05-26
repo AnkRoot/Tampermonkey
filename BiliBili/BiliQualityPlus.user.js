@@ -22,8 +22,8 @@
 // @grant        GM_unregisterMenuCommand
 // @run-at       document-start
 // @connect      api.bilibili.com
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/BiliBili/BiliQualityPlus.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/BiliBili/BiliQualityPlus.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/BiliBili/BiliQualityPlus.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/BiliBili/BiliQualityPlus.user.js
 // ==/UserScript==
 
 (function () {

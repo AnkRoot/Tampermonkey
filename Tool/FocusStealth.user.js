@@ -8,8 +8,8 @@
 // @match        *://*/*
 // @grant        unsafeWindow
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/FocusStealth.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Tool/FocusStealth.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/FocusStealth.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Tool/FocusStealth.user.js
 // ==/UserScript==
 
 (function () {

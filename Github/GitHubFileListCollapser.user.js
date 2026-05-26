@@ -9,8 +9,8 @@
 // @grant        GM_addStyle
 // @run-at       document-end
 // @icon         https://github.githubassets.com/favicons/favicon.svg
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Github/GitHubFileListCollapser.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/Github/GitHubFileListCollapser.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Github/GitHubFileListCollapser.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Github/GitHubFileListCollapser.user.js
 // ==/UserScript==
 
 (function () {

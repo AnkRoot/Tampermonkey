@@ -27,8 +27,8 @@
 // @connect      localhost
 // @connect      127.0.0.1
 // @connect      ::1
-// @updateURL    https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/BiliBili/BiliVideoDownloader.user.js
-// @downloadURL  https://raw.githubusercontent.com/AnkRoot/AnkTool/main/Tampermonkey/BiliBili/BiliVideoDownloader.user.js
+// @updateURL    https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/BiliBili/BiliVideoDownloader.user.js
+// @downloadURL  https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/BiliBili/BiliVideoDownloader.user.js
 // ==/UserScript==
 
 (function () {
