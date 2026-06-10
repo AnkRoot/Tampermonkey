@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         !.Bilibili Video Downloader (Ank)
+// @name         !.Bilibili Video Downloader
 // @description  B站视频/番剧/课程解析：支持dash/flv/mp4，字幕/弹幕下载，aria2 RPC/命令/Blob下载；仅使用账号可访问资源（不绕过权限），UI默认零侵入（Shadow DOM）。
 // @version      0.0.1
 // @author       ank

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.Account Snapshot Sync
 // @description  ☁️ 基于WebDAV的账户快照同步系统——自动捕获完整会话状态（Cookie+Storage）通过WebDAV实现多设备智能同步，支持双源冲突解决、版本感知、清单管理、Shadow DOM隔离，适用于多设备办公、测试隔离、团队共享等技术场景。
-// @version      1.2.2
+// @version      1.2.3
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -42,8 +42,39 @@
 
     const Utils = {
         sanitize: str => (str || "未命名").trim().replace(/[\s\\/:"*?<>|]+/g, "_"),
-        safeErr: err => typeof err === "string" ? err : err?.statusText || err?.msg || err?.message || `错误 ${err?.status}`,
+        safeErr(err) {
+            if (typeof err === "string") return err;
+            const status = Number(err?.status);
+            if (status === 401) return "WebDAV 认证失败，请检查用户名或密码";
+            if (status === 403) return "WebDAV 无权限访问目标目录";
+            if (status === 404) return "WebDAV 资源不存在";
+            if (status === 405) return "WebDAV 服务器不支持当前操作";
+            if (status === 409) return "WebDAV 目录不存在或路径冲突";
+            if (status >= 500) return `WebDAV 服务器错误 (${status})`;
+            return err?.msg || err?.statusText || err?.message || `错误 ${err?.status}`;
+        },
         sleep: ms => new Promise(r => setTimeout(r, ms)),
+        toBase64Utf8(str) {
+            const bytes = new TextEncoder().encode(String(str || ""));
+            let binary = "";
+            for (const byte of bytes) binary += String.fromCharCode(byte);
+            return btoa(binary);
+        },
+        extractJsonFileNameFromHref(raw) {
+            if (!raw) return null;
+            try {
+                const pathname = new URL(raw, location.href).pathname;
+                const name = pathname.split("/").filter(Boolean).pop();
+                if (!name?.endsWith(".json") || name === Config.CONSTS.MANIFEST_FILE) return null;
+                return decodeURIComponent(name);
+            } catch (err) {
+                const clean = raw.split(/[?#]/)[0];
+                const name = clean.split("/").filter(Boolean).pop();
+                if (!name?.endsWith(".json") || name === Config.CONSTS.MANIFEST_FILE) return null;
+                try { return decodeURIComponent(name); }
+                catch (decodeErr) { return name; }
+            }
+        },
         icon(name) {
             const icons = {
                 close: '<path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>',
@@ -109,6 +140,7 @@
         #authCache = null;
         #dirChecked = false;
         #dirCache = new Map();
+        #manifestQueue = Promise.resolve();
 
         constructor() {
             ConfigManager.onDavChange(() => this.reset());
@@ -118,9 +150,10 @@
             if (this.#authCache) return this.#authCache;
             const { url, user, pass } = await ConfigManager.getDavConfig();
             if (!url) throw { msg: "未配置 WebDAV URL" };
+            const hasCredentials = user !== "" || pass !== "";
             this.#authCache = {
                 url: url.replace(/\/+$/, ""),
-                headers: (user && pass) ? { "Authorization": "Basic " + btoa(`${user}:${pass}`) } : {}
+                headers: hasCredentials ? { "Authorization": "Basic " + Utils.toBase64Utf8(`${user}:${pass}`) } : {}
             };
             return this.#authCache;
         }
@@ -131,6 +164,15 @@
             if (!normalized.startsWith("/")) normalized = `/${normalized}`;
             if (!normalized.endsWith("/")) normalized += "/";
             return normalized;
+        }
+
+        #snapshotPath(fileName) {
+            return `${Config.CONSTS.BASE_PATH}${encodeURIComponent(fileName)}`;
+        }
+
+        #manifestPath(cacheBust = false) {
+            const suffix = cacheBust ? `?t=${Date.now()}` : "";
+            return `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}${suffix}`;
         }
 
         #isMissingStatus(status) {
@@ -190,7 +232,7 @@
                         headers: { ...authHeaders, ...headers },
                         data,
                         timeout: Config.CONSTS.TIMEOUT,
-                        onload: r => (r.status >= 200 && r.status < 300) ? resolve(r) : reject({ status: r.status, msg: r.statusText || `HTTP ${r.status}`, responseText: r.responseText }),
+                        onload: r => (r.status >= 200 && r.status < 300) ? resolve(r) : reject({ status: r.status, statusText: r.statusText, msg: r.statusText || `HTTP ${r.status}`, responseText: r.responseText }),
                         onerror: () => reject({ msg: "网络错误" }),
                         ontimeout: () => reject({ msg: "请求超时" })
                     });
@@ -223,98 +265,83 @@
         }
 
         async listFiles() {
-            try {
-                await this.ensureDir();
-                const res = await this.request("PROPFIND", Config.CONSTS.BASE_PATH, null, { Depth: "1" });
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(res.responseText, "application/xml");
-                const nodes = Array.from(doc.getElementsByTagName("*")).filter(n => n.localName === "href");
-                const files = new Set();
-                nodes.forEach(node => {
-                    const raw = node.textContent?.trim();
-                    if (!raw) return;
-                    const parts = raw.split("/").filter(Boolean);
-                    const name = parts.pop();
-                    if (!name || !name.endsWith(".json")) return;
-                    if (name === Config.CONSTS.MANIFEST_FILE) return;
-                    files.add(decodeURIComponent(name));
-                });
-                if (files.size > 0) return Array.from(files);
-                throw new Error("云端列表为空");
-            } catch (e) {
-                try {
-                    const res = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}?t=${Date.now()}`);
-                    const manifest = JSON.parse(res.responseText);
-                    return Array.isArray(manifest) ? manifest : [];
-                } catch (e2) {
-                    return []; // Empty or error
-                }
+            await this.ensureDir();
+            const res = await this.request("PROPFIND", Config.CONSTS.BASE_PATH, null, { Depth: "1" });
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(res.responseText, "application/xml");
+            const parseError = Array.from(doc.getElementsByTagName("*")).find(n => n.localName === "parsererror");
+            if (parseError) throw new Error("WebDAV 文件列表响应不是有效 XML");
+            const nodes = Array.from(doc.getElementsByTagName("*")).filter(n => n.localName === "href");
+            const files = new Set();
+            for (const node of nodes) {
+                const name = Utils.extractJsonFileNameFromHref(node.textContent?.trim());
+                if (name) files.add(name);
             }
+            return Array.from(files);
         }
 
         async saveFile(fileName, contentObj) {
-            await this.ensureDir(); // Ensure directory exists
-
+            await this.ensureDir();
             const content = JSON.stringify(contentObj);
-
-            // 1. Write File
-            await this.request("PUT", `${Config.CONSTS.BASE_PATH}${fileName}`, content, { "Content-Type": "application/json" });
-
-            // 2. Update Manifest (Best Effort)
-            this.#updateManifest(fileName, 'add', contentObj?.meta?.time || Date.now());
+            await this.request("PUT", this.#snapshotPath(fileName), content, { "Content-Type": "application/json" });
+            await this.#queueManifestUpdate(fileName, "add", contentObj?.meta?.time || Date.now());
         }
 
         async deleteFile(fileName) {
+            await this.ensureDir();
             try {
-                await this.request("DELETE", `${Config.CONSTS.BASE_PATH}${fileName}`);
+                await this.request("DELETE", this.#snapshotPath(fileName));
             } catch (e) {
                 if (e.status !== 404) throw e;
             }
-            this.#updateManifest(fileName, 'remove');
+            await this.#queueManifestUpdate(fileName, "remove");
         }
 
         #parseManifest(raw) {
-            if (!raw) return [];
-            const source = Array.isArray(raw) ? raw : Array.isArray(raw?.files) ? raw.files : [];
-            return source.map(entry => this.#normalizeManifestEntry(entry)).filter(Boolean);
+            if (!Array.isArray(raw)) throw new Error("云端清单格式无效");
+            return raw.map(entry => this.#normalizeManifestEntry(entry));
         }
 
         #normalizeManifestEntry(entry) {
-            if (!entry) return null;
-            if (typeof entry === "string") return { name: entry, time: null };
-            if (typeof entry === "object" && entry.name) {
-                return { name: entry.name, time: typeof entry.time === "number" ? entry.time : null };
+            if (!entry || typeof entry !== "object" || typeof entry.name !== "string") {
+                throw new Error("云端清单条目无效");
             }
-            return null;
+            if (!entry.name.endsWith(".json") || entry.name === Config.CONSTS.MANIFEST_FILE) {
+                throw new Error("云端清单条目文件名无效");
+            }
+            return { name: entry.name, time: typeof entry.time === "number" ? entry.time : null };
         }
 
         async getManifestList() {
-            try {
-                const res = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}?t=${Date.now()}`);
-                return this.#parseManifest(JSON.parse(res.responseText));
-            } catch (err) {
-                return [];
-            }
+            const res = await this.request("GET", this.#manifestPath(true));
+            return this.#parseManifest(JSON.parse(res.responseText));
+        }
+
+        async #queueManifestUpdate(fileName, action, metaTime = null) {
+            const task = () => this.#updateManifest(fileName, action, metaTime);
+            const queued = this.#manifestQueue.then(task, task);
+            this.#manifestQueue = queued.catch(() => { });
+            return queued;
         }
 
         async #updateManifest(fileName, action, metaTime = null) {
             try {
                 let list = [];
                 try {
-                    const r = await this.request("GET", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`);
+                    const r = await this.request("GET", this.#manifestPath(true));
                     list = this.#parseManifest(JSON.parse(r.responseText));
                 } catch (e) { }
 
-                if (action === 'add') {
+                if (action === "add") {
                     const entry = { name: fileName, time: metaTime ?? Date.now() };
                     const idx = list.findIndex(i => i.name === fileName);
                     if (idx >= 0) list[idx] = entry;
                     else list.push(entry);
-                } else if (action === 'remove') {
+                } else if (action === "remove") {
                     list = list.filter(i => i.name !== fileName);
                 }
 
-                await this.request("PUT", `${Config.CONSTS.BASE_PATH}${Config.CONSTS.MANIFEST_FILE}`, JSON.stringify(list), { "Content-Type": "application/json" });
+                await this.request("PUT", this.#manifestPath(), JSON.stringify(list), { "Content-Type": "application/json" });
             } catch (e) {
                 console.warn("Manifest update warning:", e);
             }
@@ -322,7 +349,19 @@
     }
 
     class ProfileManager {
+        static hasCookieApi() {
+            return typeof GM_cookie !== "undefined"
+                && typeof GM_cookie.list === "function"
+                && typeof GM_cookie.delete === "function"
+                && typeof GM_cookie.set === "function";
+        }
+
+        static #ensureCookieApi(action) {
+            if (!this.hasCookieApi()) throw new Error(`当前环境不支持 GM_cookie，无法${action}`);
+        }
+
         static async collect(name) {
+            this.#ensureCookieApi("保存完整账户快照");
             const cookies = await this.#listCookies();
             return {
                 meta: { v: 1, name, host: location.hostname, url: location.href, time: Date.now() },
@@ -331,32 +370,47 @@
         }
 
         static async restore(snapshot) {
-            if (!snapshot?.data?.cookies) throw new Error("快照数据无效");
+            if (!Array.isArray(snapshot?.data?.cookies)) throw new Error("快照数据无效");
+            this.#ensureCookieApi("恢复完整账户快照");
 
-            // Clean
             localStorage.clear();
             sessionStorage.clear();
-            const currentCookies = await this.#listCookies();
-            for (const c of currentCookies) await this.#deleteCookie(c.name);
-
-            // Restore Storage
             if (snapshot.data.local) Object.entries(snapshot.data.local).forEach(([k, v]) => localStorage.setItem(k, v));
             if (snapshot.data.session) Object.entries(snapshot.data.session).forEach(([k, v]) => sessionStorage.setItem(k, v));
 
-            // Restore Cookies
-            let count = 0;
-            for (const c of snapshot.data.cookies) {
+            const currentCookies = await this.#listCookies();
+            for (const cookie of currentCookies) {
                 try {
-                    await this.#setCookie(c);
-                    count++;
-                } catch (e) { }
+                    await this.#deleteCookie(cookie);
+                } catch (err) {
+                    console.warn("Delete current cookie failed:", cookie?.name, err);
+                }
             }
-            return count;
+
+            let restored = 0;
+            let failed = 0;
+            for (const cookie of snapshot.data.cookies) {
+                try {
+                    await this.#setCookie(cookie);
+                    restored++;
+                } catch (err) {
+                    failed++;
+                }
+            }
+            return { restored, failed };
         }
 
         static #listCookies = () => new Promise(r => GM_cookie.list({ url: location.href }, c => r(c || [])));
 
-        static #deleteCookie = name => new Promise(r => GM_cookie.delete({ url: location.href, name }, r));
+        static #deleteCookie = cookie => new Promise((resolve, reject) => {
+            const details = { url: location.href, name: cookie?.name };
+            if (cookie?.domain) details.domain = cookie.domain;
+            if (cookie?.path) details.path = cookie.path;
+            GM_cookie.delete(details, result => {
+                if (typeof result === "string" || result?.error || result?.message) reject(result);
+                else resolve();
+            });
+        });
 
         static #setCookie = cookie => new Promise((resolve, reject) => {
             GM_cookie.set({
@@ -472,12 +526,39 @@
 
         async open() {
             if (!this.#root.querySelector(".overlay")) this.#render();
+            await this.#hydrateDavForm();
             this.loadList();
             await Utils.sleep(10);
             this.#root.querySelector(".overlay").classList.add("open");
+            this.#showRuntimeWarning();
         }
 
         close() { this.#root.querySelector(".overlay")?.classList.remove("open"); }
+
+        async #hydrateDavForm() {
+            const { url, user, pass } = await ConfigManager.getDavConfig();
+            const urlInput = this.#root.querySelector("#cfg_dav_url");
+            const userInput = this.#root.querySelector("#cfg_dav_user");
+            const passInput = this.#root.querySelector("#cfg_dav_pass");
+            if (!urlInput || !userInput || !passInput) return;
+            urlInput.value = url || "";
+            userInput.value = user || "";
+            passInput.value = pass || "";
+        }
+
+        #readDavForm() {
+            return {
+                url: this.#root.querySelector("#cfg_dav_url")?.value.trim() || "",
+                user: this.#root.querySelector("#cfg_dav_user")?.value || "",
+                pass: this.#root.querySelector("#cfg_dav_pass")?.value || ""
+            };
+        }
+
+        #showRuntimeWarning() {
+            if (!ProfileManager.hasCookieApi()) {
+                this.#setStatus("当前环境不支持 GM_cookie，无法保存或恢复完整账户快照。", "error");
+            }
+        }
 
         #setStatus(msg = "", type = "info") {
             if (!this.#statusEl) return;
@@ -486,38 +567,18 @@
             this.#statusEl.style.display = msg ? "block" : "none";
         }
 
-        #storagePrefix(type) {
-            if (type === "cloud") return Config.CONSTS.CLOUD_PREFIX;
-            if (type === "pref") return Config.CONSTS.PREF_PREFIX;
-            return Config.CONSTS.PREFIX;
-        }
-        #localKey(id) { return this.#storagePrefix("local") + id; }
-        #cloudKey(id) { return this.#storagePrefix("cloud") + id; }
-        #prefKey(id) { return this.#storagePrefix("pref") + id; }
+        #localKey(id) { return Config.CONSTS.PREFIX + id; }
+        #cloudKey(id) { return Config.CONSTS.CLOUD_PREFIX + id; }
+        #prefKey(id) { return Config.CONSTS.PREF_PREFIX + id; }
         #idFromKey(key, type) {
-            const prefix = this.#storagePrefix(type);
+            const prefix = type === "cloud" ? Config.CONSTS.CLOUD_PREFIX : Config.CONSTS.PREFIX;
             return key.startsWith(prefix) ? key.slice(prefix.length) : null;
         }
         #belongsToHost(id) { return id.startsWith(`${location.hostname}_`); }
         #displayName(id) { return id.replace(`${location.hostname}_`, "").replace(".json", ""); }
-        #showListTip(message = "") {
-            const tip = this.#root.querySelector("#list_tip");
-            if (!tip) return;
-            tip.textContent = message;
-            tip.style.display = message ? "block" : "none";
-        }
 
         #notifyError(err, prefix = "错误") {
             this.#setStatus(`${prefix}: ${Utils.safeErr(err)}`, "error");
-        }
-
-        async #runQuietly(task, prefix = "错误") {
-            try {
-                return await task();
-            } catch (err) {
-                this.#notifyError(err, prefix);
-                return null;
-            }
         }
 
         async #withSnapshot(item, handler, options = {}) {
@@ -559,46 +620,64 @@
 
         async #syncFromCloud(interactive = false) {
             const seen = new Set();
-            const entries = await this.#loadRemoteEntries();
-            const pulled = await this.#importRemoteEntries(entries, seen);
-            await this.#cleanupCloudCache(seen);
-            if (interactive) this.#setStatus(`云端同步完成，共拉取 ${pulled} 份快照`, "info");
-            return Array.from(seen);
+            const remote = await this.#loadRemoteEntries();
+            const result = await this.#importRemoteEntries(remote.entries, seen);
+            if (remote.canPrune) await this.#cleanupCloudCache(seen);
+            if (interactive) {
+                if (result.failed > 0) this.#setStatus(`云端同步部分失败：成功拉取 ${result.pulled} 份，失败 ${result.failed} 份`, "error");
+                else this.#setStatus(`云端同步完成，共拉取 ${result.pulled} 份快照`, "info");
+            }
+            return { seen: Array.from(seen), ...result };
         }
 
         async #loadRemoteEntries() {
-            const host = location.hostname;
-            const manifestEntries = await this.#dav.getManifestList();
-            if (manifestEntries.length > 0) {
-                return manifestEntries.filter(entry => entry?.name?.startsWith(host));
+            const hostPrefix = `${location.hostname}_`;
+
+            try {
+                const manifestEntries = await this.#dav.getManifestList();
+                return {
+                    entries: manifestEntries.filter(entry => entry?.name?.startsWith(hostPrefix)),
+                    canPrune: true
+                };
+            } catch (manifestError) {
+                try {
+                    const files = await this.#dav.listFiles();
+                    return {
+                        entries: files.filter(name => name?.startsWith(hostPrefix)).map(name => ({ name, time: null })),
+                        canPrune: true
+                    };
+                } catch (listError) {
+                    throw listError;
+                }
             }
-            const files = await this.#dav.listFiles();
-            return files.filter(name => name?.startsWith(host)).map(name => ({ name, time: null }));
         }
 
         async #importRemoteEntries(entries, seen) {
             let pulled = 0;
+            let failed = 0;
             for (const entry of entries) {
-                if (await this.#refreshRemoteEntry(entry, seen)) pulled++;
+                const result = await this.#refreshRemoteEntry(entry, seen);
+                if (result.pulled) pulled++;
+                if (result.failed) failed++;
             }
-            return pulled;
+            return { pulled, failed };
         }
 
         async #refreshRemoteEntry(entry, seen) {
             const name = entry?.name;
-            if (!name) return false;
+            if (!name) return { pulled: false, failed: false };
             seen.add(name);
             const cloudKey = this.#cloudKey(name);
             const cached = GM_getValue(cloudKey);
             const remoteTime = typeof entry?.time === "number" ? entry.time : null;
-            if (!this.#needsRemoteFetch(cached, remoteTime)) return false;
+            if (!this.#needsRemoteFetch(cached, remoteTime)) return { pulled: false, failed: false };
             try {
                 const remote = await this.#fetchRemoteSnapshot(name);
                 GM_setValue(cloudKey, remote);
-                return true;
+                return { pulled: true, failed: false };
             } catch (err) {
                 console.warn("Cloud fetch failed:", name, err);
-                return false;
+                return { pulled: false, failed: true };
             }
         }
 
@@ -619,7 +698,7 @@
         }
 
         async #fetchRemoteSnapshot(fileName) {
-            const res = await this.#dav.request("GET", `${Config.CONSTS.BASE_PATH}${fileName}`);
+            const res = await this.#dav.request("GET", `${Config.CONSTS.BASE_PATH}${encodeURIComponent(fileName)}`);
             try {
                 return JSON.parse(res.responseText);
             } catch (err) {
@@ -674,6 +753,7 @@
             const original = button.innerHTML;
             button.textContent = "上传中...";
             let ok = 0;
+            let failed = 0;
             for (const entry of entries) {
                 const data = GM_getValue(entry.key);
                 if (!data) continue;
@@ -683,11 +763,12 @@
                     GM_setValue(this.#cloudKey(fileName), data);
                     ok++;
                 } catch (err) {
+                    failed++;
                     console.error("Upload failed", fileName, err);
                 }
             }
             button.innerHTML = original;
-            this.#setStatus(`上传完成：${ok}/${entries.length}`, "info");
+            this.#setStatus(failed > 0 ? `上传部分失败：成功 ${ok} 份，失败 ${failed} 份` : `上传完成：${ok}/${entries.length}`, failed > 0 ? "error" : "info");
             this.loadList({ cloud: true });
         }
 
@@ -768,19 +849,9 @@
                 q("#view-list").style.display = t.dataset.view === "list" ? "block" : "none";
             });
 
-            ConfigManager.getDavConfig().then(({ url, user, pass }) => {
-                if (url) q("#cfg_dav_url").value = url;
-                if (user) q("#cfg_dav_user").value = user;
-                if (pass) q("#cfg_dav_pass").value = pass;
-            });
-
             q("#btn_save_cfg").onclick = async () => {
-                const config = {
-                    url: q("#cfg_dav_url").value,
-                    user: q("#cfg_dav_user").value,
-                    pass: q("#cfg_dav_pass").value
-                };
-                await ConfigManager.saveDavConfig(config);
+                await ConfigManager.saveDavConfig(this.#readDavForm());
+                await this.#hydrateDavForm();
                 this.#setStatus("配置已保存", "info");
             };
 
@@ -792,12 +863,23 @@
                     const clean = Utils.sanitize(name);
                     const snap = await ProfileManager.collect(clean);
                     const fn = `${location.hostname}_${clean}.json`;
+                    const savedDav = await ConfigManager.getDavConfig();
+                    const formDav = this.#readDavForm();
+                    const davDirty = formDav.url !== savedDav.url || formDav.user !== savedDav.user || formDav.pass !== savedDav.pass;
+
                     GM_setValue(Config.CONSTS.PREFIX + fn, snap);
 
-                    if (q("#cfg_dav_url").value.trim()) {
-                        await this.#dav.saveFile(fn, snap);
-                        GM_setValue(this.#cloudKey(fn), snap);
-                        this.#setStatus("已同步本地 + 云端", "info");
+                    if (savedDav.url && !davDirty) {
+                        try {
+                            await this.#dav.saveFile(fn, snap);
+                            GM_setValue(this.#cloudKey(fn), snap);
+                            this.#setStatus("已同步本地 + 云端", "info");
+                        } catch (err) {
+                            console.error("Cloud save failed:", err);
+                            this.#setStatus(`已保存本地；云端同步失败: ${Utils.safeErr(err)}`, "error");
+                        }
+                    } else if (davDirty && (savedDav.url || formDav.url || formDav.user || formDav.pass)) {
+                        this.#setStatus("已保存本地；检测到未保存的 WebDAV 配置变更，如需云同步请先保存配置", "info");
                     } else {
                         this.#setStatus("已保存本地", "info");
                     }
@@ -879,70 +961,50 @@
         }
 
         async loadList(options = {}) {
-            const { cloud, interactive } = this.#normalizeListOptions(options);
-            const container = this.#prepareListContainer();
+            const cloud = typeof options === "boolean" ? options : !!options.cloud;
+            const interactive = typeof options === "boolean" ? false : !!options.interactive;
+            const container = this.#root.querySelector("#list_container");
             if (!container) return;
+            container.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">加载中...</div>';
             try {
-                const entries = await this.#collectSnapshotEntries({ syncCloud: cloud, interactive });
-                await this.#handleConflictTip(entries);
+                if (cloud && await this.#ensureDavReady()) {
+                    try {
+                        await this.#syncFromCloud(interactive);
+                    } catch (err) {
+                        this.#notifyError(err, "云端同步失败");
+                    }
+                }
+                const map = new Map();
+                for (const key of GM_listValues()) {
+                    const cloudId = this.#idFromKey(key, "cloud");
+                    const localId = cloudId ? null : this.#idFromKey(key, "local");
+                    const id = cloudId || localId;
+                    const type = cloudId ? "cloud" : localId ? "local" : null;
+                    if (!id || !this.#belongsToHost(id)) continue;
+                    const entry = map.get(id) || { id, display: this.#displayName(id), local: false, cloud: false };
+                    entry[type] = true;
+                    map.set(id, entry);
+                }
+                const entries = Array.from(map.values()).sort((a, b) => a.display.localeCompare(b.display));
+                this.#handleConflictTip(entries);
                 await this.#renderList(container, entries);
             } catch (err) {
                 container.innerHTML = `<div style="color:red;padding:10px">${Utils.safeErr(err)}</div>`;
             }
         }
 
-        #normalizeListOptions(options) {
-            if (typeof options === "boolean") return { cloud: options, interactive: false };
-            return { cloud: !!options.cloud, interactive: !!options.interactive };
-        }
-
-        #prepareListContainer() {
-            const container = this.#root.querySelector("#list_container");
-            if (!container) return null;
-            container.innerHTML = '<div style="padding:15px;text-align:center;color:#999;font-size:12px;border-bottom:1px solid #eee">加载中...</div>';
-            return container;
-        }
-
-        async #collectSnapshotEntries({ syncCloud, interactive }) {
-            if (syncCloud && await this.#ensureDavReady()) {
-                await this.#runQuietly(() => this.#syncFromCloud(interactive), "云端同步失败");
-            }
-            const keys = GM_listValues();
-            const map = new Map();
-            for (const key of keys) this.#applyStorageKey(map, key);
-            return Array.from(map.values()).sort((a, b) => a.display.localeCompare(b.display));
-        }
-
-        #applyStorageKey(map, key) {
-            const info = this.#identifySnapshotKey(key);
-            if (!info || !this.#belongsToHost(info.id)) return;
-            const entry = map.get(info.id) || { id: info.id, display: this.#displayName(info.id), local: false, cloud: false };
-            entry[info.type] = true;
-            map.set(info.id, entry);
-        }
-
-        #identifySnapshotKey(key) {
-            const cloudId = this.#idFromKey(key, "cloud");
-            if (cloudId) return { type: "cloud", id: cloudId };
-            const localId = this.#idFromKey(key, "local");
-            if (localId) return { type: "local", id: localId };
-            return null;
-        }
-
-        async #handleConflictTip(entries) {
+        #handleConflictTip(entries) {
+            const tip = this.#root.querySelector("#list_tip");
+            if (!tip) return;
             const hasConflict = entries.some(entry => entry.local && entry.cloud);
-            if (!hasConflict) {
-                this.#showListTip("");
+            if (hasConflict && !GM_getValue(Config.CONSTS.TIP_KEY_PREFIX + location.hostname)) {
+                tip.textContent = "提示：左键点击本地/云端标签可设默认来源，右键可执行覆盖。";
+                tip.style.display = "block";
+                GM_setValue(Config.CONSTS.TIP_KEY_PREFIX + location.hostname, Date.now());
                 return;
             }
-            const tipKey = Config.CONSTS.TIP_KEY_PREFIX + location.hostname;
-            const shown = GM_getValue(tipKey);
-            if (!shown) {
-                this.#showListTip("提示：左键点击本地/云端标签可设默认来源，右键可执行覆盖。");
-                GM_setValue(tipKey, Date.now());
-                return;
-            }
-            this.#showListTip("");
+            tip.textContent = "";
+            tip.style.display = "none";
         }
 
         async #renderList(container, entries) {
@@ -960,7 +1022,6 @@
             const row = document.createElement("div");
             row.className = "item";
 
-            // 构建信息部分
             const info = document.createElement("div");
             info.className = "item-info";
 
@@ -978,7 +1039,6 @@
 
             info.append(name, meta);
 
-            // 构建操作按钮部分
             const actions = document.createElement("div");
             actions.className = "actions";
 
@@ -989,44 +1049,37 @@
             });
             actions.appendChild(btnCopy);
 
-            // 添加上传按钮
             if (item.local) {
                 const btnUpload = this.#createIconButton("upload", "上传至云端");
                 btnUpload.onclick = () => this.#uploadSingleSnapshot(item);
                 actions.appendChild(btnUpload);
             }
 
-            // 添加恢复按钮
             const btnRestore = this.#createIconButton("restore", "恢复");
             btnRestore.onclick = async () => {
                 if (!confirm(`恢复 "${item.display}" ?`)) return;
                 await this.#withSnapshot(item, async (data, source) => {
-                    const count = await ProfileManager.restore(data);
-                    this.#setStatus(`已恢复 ${count} 条 Cookie (${source === "cloud" ? "云端" : "本地"})，即将刷新`, "info");
+                    const result = await ProfileManager.restore(data);
+                    const sourceLabel = source === "cloud" ? "云端" : "本地";
+                    const message = `已恢复 ${result.restored} 条 Cookie (${sourceLabel})${result.failed ? `，失败 ${result.failed} 条` : ""}，即将刷新`;
+                    this.#setStatus(message, result.failed ? "error" : "info");
                     await Utils.sleep(1000);
                     location.reload();
                 });
             };
             actions.appendChild(btnRestore);
 
-            // 添加删除按钮
             const btnDelete = this.#createIconButton("delete", "删除", "icon-btn del");
             btnDelete.onclick = async () => {
                 if (!confirm(`删除 "${item.display}" ?`)) return;
 
-                // 并行删除本地和云端数据
-                const deletePromises = [
-                    GM_deleteValue(this.#localKey(item.id)),
-                    GM_deleteValue(this.#cloudKey(item.id)),
-                    GM_deleteValue(this.#prefKey(item.id)),
-                    this.#prefCache.delete(item.id)
-                ];
+                if (item.cloud) await this.#dav.deleteFile(item.id);
+                GM_deleteValue(this.#localKey(item.id));
+                GM_deleteValue(this.#cloudKey(item.id));
+                GM_deleteValue(this.#prefKey(item.id));
+                this.#prefCache.delete(item.id);
 
-                if (item.cloud) deletePromises.push(this.#dav.deleteFile(item.id));
-
-                await Promise.all(deletePromises);
-
-                this.loadList({ cloud: item.cloud });
+                this.loadList();
                 this.#setStatus("快照已删除", "info");
             };
             actions.appendChild(btnDelete);

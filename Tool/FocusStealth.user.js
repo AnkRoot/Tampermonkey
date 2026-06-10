@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.FocusStealth
-// @description  全局拦截 visibilitychange / blur / focusout / pagehide / mouseleave 等事件，并伪装 document.visibilityState/hidden。
-// @version      0.0.3
+// @description  伪装页面始终可见/聚焦，并精准拦截 visibilitychange / blur / focusout / pagehide / mouseleave / mouseout 等前台检测事件。
+// @version      0.0.4
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0
@@ -15,11 +15,6 @@
 (function () {
   'use strict';
 
-  /**
-   * ================================
-   * Layer 1: Configuration & Constants
-   * ================================
-   */
   const CONSTANTS = {
     LOG_PREFIX: '[🛡️ Stealth]',
     EVENT_GROUPS: {
@@ -51,17 +46,11 @@
     }
   };
 
-  // 极简配置：直接全打开
   const CONFIG = Object.freeze({
-    ENABLE_ALL: true,   // 若以后你想临时关掉，可以改成 false 再保存脚本
-    DEBUG: false        // 改成 true 可看调试日志
+    ENABLE_ALL: true,
+    DEBUG: false
   });
 
-  /**
-   * ================================
-   * Layer 2: Core Business Logic (Domain)
-   * ================================
-   */
   class StealthEngine {
     #context;
     #isInitialized = false;
@@ -69,8 +58,6 @@
 
     constructor() {
       this.#context = unsafeWindow || window;
-
-      // Pre-compute event lookup Set for O(1) performance
       this.#targetedEvents = new Set([
         ...CONSTANTS.EVENT_GROUPS.VISIBILITY.events,
         ...CONSTANTS.EVENT_GROUPS.FOCUS.events,
@@ -79,16 +66,12 @@
     }
 
     run() {
-      if (this.#isInitialized) return;
+      if (this.#isInitialized || !CONFIG.ENABLE_ALL) return;
       this.#isInitialized = true;
-
-      this.#log('Engine starting (full-block, no-menu mode)...');
-
-      // Use helper method to eliminate repetitive error handling
+      this.#log('Engine starting (precise-block mode)...');
       this.#safeExecute('spoofProperties', () => this.#spoofProperties());
       this.#safeExecute('trapEvents', () => this.#trapEvents());
       this.#safeExecute('hookAddEventListener', () => this.#hookAddEventListener());
-      this.#safeExecute('patchToStringUtils', () => this.#patchToStringUtils());
     }
 
     #log(...args) {
@@ -100,9 +83,6 @@
       );
     }
 
-    /**
-     * Helper method to eliminate repetitive try-catch blocks (DRY principle)
-     */
     #safeExecute(operationName, operationFn) {
       try {
         operationFn();
@@ -111,16 +91,10 @@
       }
     }
 
-    /**
-     * Unified event checking utility (DRY principle)
-     */
     #isTargetedEvent(eventType) {
       return eventType && this.#targetedEvents.has(eventType.toLowerCase());
     }
 
-    /**
-     * Descriptor factory methods (DRY principle)
-     */
     #createGetterDescriptor(value) {
       return {
         get: () => value,
@@ -137,50 +111,97 @@
       };
     }
 
-    /**
-     * 伪装 Document 相关可见性属性 & hasFocus
-     */
     #spoofProperties() {
       const doc = this.#context.document;
       const docProto = this.#context.Document?.prototype;
+      const primaryTarget = docProto || doc;
 
-      // Simplified target gathering (KISS principle)
-      const targets = docProto ? [docProto, doc].filter(Boolean) : [doc].filter(Boolean);
+      if (!primaryTarget) return;
 
-      for (const target of targets) {
-        // Use descriptor factory methods
-        for (const [prop, value] of Object.entries(CONSTANTS.PROPS_TO_SPOOF)) {
-          this.#safeDefineProperty(target, prop, this.#createGetterDescriptor(value));
+      for (const [prop, value] of Object.entries(CONSTANTS.PROPS_TO_SPOOF)) {
+        const definedOnPrimary = this.#safeDefineProperty(
+          primaryTarget,
+          prop,
+          this.#createGetterDescriptor(value)
+        );
+
+        if (!definedOnPrimary && doc && doc !== primaryTarget) {
+          this.#safeDefineProperty(doc, prop, this.#createGetterDescriptor(value));
         }
+      }
 
-        // hasFocus() 永远返回 true
-        this.#safeDefineProperty(target, 'hasFocus', this.#createMethodDescriptor(() => true));
+      const hasFocusDefinedOnPrimary = this.#safeDefineProperty(
+        primaryTarget,
+        'hasFocus',
+        this.#createMethodDescriptor(() => true)
+      );
+
+      if (!hasFocusDefinedOnPrimary && doc && doc !== primaryTarget) {
+        this.#safeDefineProperty(doc, 'hasFocus', this.#createMethodDescriptor(() => true));
       }
     }
 
-    /**
-     * 在捕获阶段全局拦截 visibility / blur / pagehide / mouseleave 等事件
-     */
     #trapEvents() {
       if (!this.#context?.addEventListener) return;
 
-      const handler = (e) => {
-        if (!CONFIG.ENABLE_ALL) return;
+      const visibilityEvents = new Set(CONSTANTS.EVENT_GROUPS.VISIBILITY.events);
+      const pageLifecycleEvents = new Set(['pagehide', 'freeze']);
 
-        // Use unified event checking with pre-computed Set
+      const handler = (e) => {
         if (!this.#isTargetedEvent(e.type)) return;
+
+        const doc = this.#context.document;
+        const target = e.target;
+        const type = e.type.toLowerCase();
+
+        if (visibilityEvents.has(type) && target !== doc) {
+          return;
+        }
+
+        if (type === 'blur' && target !== this.#context && target !== doc) {
+          return;
+        }
+
+        if (
+          type === 'focusout' &&
+          target !== doc &&
+          target !== doc?.documentElement &&
+          target !== doc?.body
+        ) {
+          return;
+        }
+
+        if (pageLifecycleEvents.has(type) && target !== this.#context && target !== doc) {
+          return;
+        }
+
+        if (
+          type === 'mouseleave' &&
+          target !== doc &&
+          target !== doc?.documentElement &&
+          target !== doc?.body
+        ) {
+          return;
+        }
+
+        if (
+          type === 'mouseout' &&
+          (
+            (target !== doc && target !== doc?.documentElement && target !== doc?.body) ||
+            e.relatedTarget
+          )
+        ) {
+          return;
+        }
 
         try {
           e.stopImmediatePropagation();
           e.stopPropagation();
-        } catch (err) {
-          // 某些自定义事件可能不完全兼容
-        }
+        } catch (err) {}
 
-        this.#log(`Blocked event: ${e.type}`, e.target);
+        this.#log(`Blocked event: ${e.type}`, target);
       };
 
-      // Simplified event aggregation (KISS principle)
       const allEvents = [
         ...CONSTANTS.EVENT_GROUPS.VISIBILITY.events,
         ...CONSTANTS.EVENT_GROUPS.FOCUS.events,
@@ -189,27 +210,24 @@
 
       allEvents.forEach((evt) => {
         this.#safeExecute(`addEventListener for ${evt}`, () => {
-          this.#context.addEventListener(evt, handler, true); // 捕获阶段
+          this.#context.addEventListener(evt, handler, true);
         });
       });
     }
 
-    /**
-     * 劫持 EventTarget.prototype.addEventListener
-     */
     #hookAddEventListener() {
       const proto = this.#context.EventTarget?.prototype;
       const originalAdd = proto?.addEventListener;
 
       if (typeof originalAdd !== 'function') return;
 
-      // Standardized variable naming (KISS principle)
-      const patched = (type, listener, options) => {
+      const engine = this;
+
+      const patched = function (type, listener, options) {
         const result = originalAdd.call(this, type, listener, options);
 
-        // Use unified event checking
-        if (CONFIG.DEBUG && this.#isTargetedEvent(type)) {
-          this.#log('Site registered suspect listener:', type, listener);
+        if (CONFIG.DEBUG && engine.#isTargetedEvent(type)) {
+          engine.#log('Site registered suspect listener:', type, listener);
         }
 
         return result;
@@ -222,11 +240,12 @@
     }
 
     #safeDefineProperty(obj, prop, descriptor) {
-      if (!obj) return;
+      if (!obj) return false;
       try {
         Object.defineProperty(obj, prop, descriptor);
+        return true;
       } catch (e) {
-        // 某些环境原型不可写，静默降级
+        return false;
       }
     }
 
@@ -238,22 +257,10 @@
           configurable: true,
           writable: true
         });
-      } catch (e) {
-        // 忽略 toString 伪装失败
-      }
-    }
-
-    #patchToStringUtils() {
-      // Empty method - kept for consistency but marked for future implementation
-      // Could be removed or implemented based on future requirements
+      } catch (e) {}
     }
   }
 
-  /**
-   * ================================
-   * Main Entry
-   * ================================
-   */
   function main() {
     try {
       const core = new StealthEngine();

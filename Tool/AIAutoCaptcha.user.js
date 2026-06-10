@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.AIAutoCaptcha
 // @description  智能填表。支持 OpenAI/Gemini。自动处理文本验证码；按住 [Alt+点击] 图片强制识别并填入验证码框（找不到则输出到控制台）。
-// @version      3.2.0
+// @version      3.2.3
 // @author       ank
 // @namespace    https://010314.xyz/
 // @license      AGPL-3.0
@@ -37,16 +37,11 @@
             }
         };
 
-        // 安全规则：仅在高度疑似验证码输入框时才会填充（白名单优先）
         static SECURITY = {
-            // 禁止填充的 input type
             TYPE_BLACKLIST: ['password', 'email', 'search', 'url', 'date', 'datetime-local', 'file', 'hidden', 'submit', 'button', 'reset', 'checkbox', 'radio', 'range'],
-
-            // 命中则拒绝（id/name/class/placeholder）
             KEYWORD_BLACKLIST: ['user', 'login', 'account', 'pwd', 'pass', 'auth', 'token', 'csrf', 'mail', 'phone', 'mobile', 'address', 'search', 'query', 'wd', 'keyword', 'title', 'content', 'msg', 'price', 'amount'],
-
-            // 命中则优先（id/name/class/placeholder）
-            KEYWORD_WHITELIST: ['captcha', 'yzm', 'verification', 'verify', 'vcode', 'checkcode', '验证码', '校验', 'code']
+            KEYWORD_WHITELIST: ['captcha', 'yzm', 'verification', 'verify', 'vcode', 'checkcode', '验证码', '校验', 'code'],
+            STRONG_IMG_HINTS: ['captcha', 'yzm', 'verification', 'verify', 'vcode', 'checkcode', 'validate', 'random', 'auth', '验证码', '校验']
         };
 
         static IMG_SELECTORS = [
@@ -58,33 +53,71 @@
         ];
 
         static #data = null;
+
         static load() {
             try {
                 const stored = GM_getValue(this.KEY);
-                this.#data = stored ? { ...this.DEFAULTS, ...JSON.parse(stored) } : { ...this.DEFAULTS };
-                // 深度补全，防止新字段丢失
-                ['openai', 'gemini'].forEach(k => this.#data[k] = { ...this.DEFAULTS[k], ...(this.#data[k] || {}) });
-            } catch { this.#data = { ...this.DEFAULTS }; }
+                if (!stored) {
+                    this.#data = this.#cloneDefaults();
+                    return;
+                }
+
+                const parsed = JSON.parse(stored);
+                this.#data = this.#isValid(parsed) ? parsed : this.#cloneDefaults();
+            } catch {
+                this.#data = this.#cloneDefaults();
+            }
         }
-        static get() { if (!this.#data) this.load(); return this.#data; }
-        static save(d) { this.#data = { ...this.#data, ...d }; GM_setValue(this.KEY, JSON.stringify(this.#data)); }
+
+        static get() {
+            if (!this.#data) this.load();
+            return this.#data;
+        }
+
+        static save(data) {
+            if (!this.#isValid(data)) throw new Error('Invalid config');
+            this.#data = data;
+            GM_setValue(this.KEY, JSON.stringify(data));
+        }
+
+        static #cloneDefaults() {
+            return {
+                provider: this.DEFAULTS.provider,
+                openai: { ...this.DEFAULTS.openai },
+                gemini: { ...this.DEFAULTS.gemini }
+            };
+        }
+
+        static #isValid(data) {
+            return data
+                && (data.provider === 'openai' || data.provider === 'gemini')
+                && this.#isProviderConfig(data.openai)
+                && this.#isProviderConfig(data.gemini);
+        }
+
+        static #isProviderConfig(cfg) {
+            return cfg
+                && typeof cfg.baseUrl === 'string'
+                && typeof cfg.apiKey === 'string'
+                && typeof cfg.model === 'string'
+                && typeof cfg.textPrompt === 'string';
+        }
     }
 
-    // Core: AI Service
     class AI {
-        static async solve(base64) {
+        static async solve(base64, options = {}) {
             const conf = Config.get();
             const cfg = conf[conf.provider];
-            if (!cfg.apiKey) throw new Error('No API Key');
+            if (!cfg?.apiKey?.trim()) throw new Error('No API Key');
 
             const prompt = cfg.textPrompt;
             const cleanBase64 = base64.replace(/^data:image\/\w+;base64,/, '');
 
-            if (conf.provider === 'gemini') return this.#gemini(cfg, cleanBase64, prompt);
-            return this.#openai(cfg, base64, prompt);
+            if (conf.provider === 'gemini') return this.#gemini(cfg, cleanBase64, prompt, options);
+            return this.#openai(cfg, base64, prompt, options);
         }
 
-        static async #openai(cfg, imgUrl, prompt) {
+        static async #openai(cfg, imgUrl, prompt, options) {
             const body = {
                 model: cfg.model,
                 messages: [{
@@ -97,80 +130,137 @@
                 max_tokens: 16,
                 temperature: 0
             };
-            const res = await this.request('POST', cfg.baseUrl, { 'Authorization': `Bearer ${cfg.apiKey}` }, body);
+            const res = await this.request('POST', cfg.baseUrl, { 'Authorization': `Bearer ${cfg.apiKey}` }, body, options);
             return res.choices?.[0]?.message?.content?.trim();
         }
 
-        static async #gemini(cfg, b64, prompt) {
+        static async #gemini(cfg, b64, prompt, options) {
             const url = `${cfg.baseUrl}/${cfg.model}:generateContent?key=${cfg.apiKey}`;
             const body = {
                 contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'image/png', data: b64 } }] }]
             };
-            const res = await this.request('POST', url, {}, body);
+            const res = await this.request('POST', url, {}, body, options);
             return res.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
         }
 
-        static request(method, url, headers, body) {
+        static request(method, url, headers = {}, body, options = {}) {
+            const { timeout = 30000, signal } = options;
+
             return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method, url, timeout: 30000,
+                if (signal?.aborted) {
+                    reject(this.#abortError(signal.reason));
+                    return;
+                }
+
+                let settled = false;
+                let req = null;
+
+                const cleanup = () => {
+                    signal?.removeEventListener?.('abort', onAbort);
+                };
+                const finish = (fn, value) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    fn(value);
+                };
+                const fail = err => finish(reject, err instanceof Error ? err : new Error(String(err)));
+                const succeed = value => finish(resolve, value);
+                const onAbort = () => {
+                    try { req?.abort?.(); } catch {}
+                    fail(this.#abortError(signal?.reason));
+                };
+
+                signal?.addEventListener?.('abort', onAbort, { once: true });
+
+                req = GM_xmlhttpRequest({
+                    method,
+                    url,
+                    timeout,
                     headers: body === undefined ? { ...headers } : { 'Content-Type': 'application/json', ...headers },
                     data: body === undefined ? undefined : JSON.stringify(body),
                     onload: r => {
-                        if (r.status >= 200 && r.status < 300) {
-                            try { resolve(JSON.parse(r.responseText)); }
-                            catch { reject(new Error('Bad JSON')); }
+                        if (r.status < 200 || r.status >= 300) {
+                            fail(new Error(this.#formatHttpError(r)));
                             return;
                         }
-                        reject(new Error(`HTTP ${r.status}`));
+
+                        try {
+                            succeed(JSON.parse(r.responseText));
+                        } catch {
+                            fail(new Error('Bad JSON'));
+                        }
                     },
-                    onerror: () => reject(new Error('Network Error'))
+                    ontimeout: () => fail(new Error('Request timeout')),
+                    onabort: () => fail(this.#abortError()),
+                    onerror: () => fail(new Error('Network Error'))
                 });
             });
+        }
+
+        static #formatHttpError(r) {
+            const snippet = (r.responseText || '').trim().replace(/\s+/g, ' ').slice(0, 200);
+            return snippet ? `HTTP ${r.status}: ${snippet}` : `HTTP ${r.status}`;
+        }
+
+        static #abortError(reason) {
+            if (reason instanceof Error) {
+                reason.name = reason.name || 'AbortError';
+                return reason;
+            }
+            const err = new Error(typeof reason === 'string' && reason ? reason : 'Request aborted');
+            err.name = 'AbortError';
+            return err;
         }
     }
 
     class ModelService {
         static async list(provider, overrides = {}) {
-            const conf = Config.get();
-            const cfg = { ...conf[provider], ...overrides };
-            if (!cfg.apiKey) throw new Error('No API Key');
+            const conf = Config.get(), cfg = { ...conf[provider], ...overrides };
+            if (!cfg?.apiKey?.trim()) throw new Error('No API Key');
             return provider === 'gemini' ? this.#listGemini(cfg) : this.#listOpenAI(cfg);
         }
 
         static async #listOpenAI(cfg) {
-            const url = this.#openaiListUrl(cfg.baseUrl);
-            const res = await AI.request('GET', url, { 'Authorization': `Bearer ${cfg.apiKey}` });
+            const res = await AI.request('GET', this.#modelsUrl(cfg.baseUrl), { 'Authorization': `Bearer ${cfg.apiKey}` });
             const models = (res.data || []).map(m => m.id).filter(Boolean);
-            if (!models?.length) throw new Error('No models returned');
+            if (!models.length) throw new Error('No models returned');
             return models;
-        }
-
-        static #openaiListUrl(url) {
-            const cleaned = url.replace(/\/v1\/.*$/, '/v1/models');
-            return cleaned.includes('/models') ? cleaned : `${cleaned}/models`;
         }
 
         static async #listGemini(cfg) {
-            const url = this.#geminiListUrl(cfg.baseUrl, cfg.apiKey);
-            const res = await AI.request('GET', url, {});
+            const res = await AI.request('GET', this.#modelsUrl(cfg.baseUrl, cfg.apiKey), {});
             const models = (res.models || []).map(m => m.name?.split('/').pop()).filter(Boolean);
-            if (!models?.length) throw new Error('No models returned');
+            if (!models.length) throw new Error('No models returned');
             return models;
         }
 
-        static #geminiListUrl(baseUrl, key) {
-            const base = baseUrl.replace(/\/:generateContent.*$/, '').replace(/\/models\/?$/, '/models');
-            const root = base.includes('/models') ? base : `${base}/models`;
-            return `${root}?key=${key}`;
+        static #modelsUrl(url, key = '') {
+            const parsed = this.#parseUrl(url), path = parsed.pathname.replace(/\/+$/, '');
+            parsed.pathname = /\/models(?:\/.*)?$/i.test(path)
+                ? path.replace(/(\/models).*/, '$1')
+                : /\/chat\/completions$/i.test(path)
+                    ? path.replace(/\/chat\/completions$/i, '/models')
+                    : /\/(?:responses|completions)$/i.test(path)
+                        ? path.replace(/\/(?:responses|completions)$/i, '/models')
+                        : `${path}/models`;
+            parsed.search = '';
+            if (key) parsed.searchParams.set('key', key);
+            return parsed.toString();
+        }
+
+        static #parseUrl(url) {
+            try { return new URL(String(url || '').trim()); }
+            catch { throw new Error('Invalid API Base URL'); }
         }
     }
 
-    // Logic: Scanner & Processor
     class Main {
         #processed = new WeakSet();
         #inputState = new WeakMap();
         #imgMeta = new WeakMap();
+        #runSeq = new WeakMap();
+        #retryState = new WeakMap();
 
         constructor() {
             Config.load();
@@ -179,216 +269,326 @@
 
         #init() {
             GM_registerMenuCommand('⚙️ Settings', () => SettingsUI.open());
-
+            this.#scan();
             setInterval(() => this.#scan(), 1500);
-
-            // Alt+点击图片：强制识别；能定位到验证码输入框则直接填入
             document.addEventListener('click', e => {
                 if (!e.altKey) return;
                 const img = e.target?.closest?.('img');
                 if (!img) return;
-
                 e.preventDefault();
                 e.stopImmediatePropagation();
-
                 this.#process(img, true, this.#findInput(img));
             }, true);
         }
 
         #scan() {
-            const imgs = document.querySelectorAll(Config.IMG_SELECTORS.join(','));
-            imgs.forEach(img => {
-                this.#observeImage(img);
-                if (this.#processed.has(img) || img.offsetParent === null) return;
+            const conf = Config.get();
+            if (!conf[conf.provider]?.apiKey?.trim()) return;
+            document.querySelectorAll(Config.IMG_SELECTORS.join(',')).forEach(img => {
+                const nextRetryAt = this.#retryState.get(img) || 0;
+                if (this.#processed.has(img) || nextRetryAt > Date.now() || !this.#isElementVisible(img)) return;
                 const input = this.#findInput(img);
-                if (input) {
-                    this.#process(img, false, input);
-                }
+                if (input) this.#process(img, false, input);
             });
         }
 
         #findInput(img) {
             const S = Config.SECURITY;
-            let best = { input: null, score: -1 };
-            const attrCache = new Map();
-            let candidates = [];
-            let parent = img.parentElement;
-
-            for (let i = 0; i < 5 && parent; i++) {
+            const candidates = new Set();
+            for (let parent = img.parentElement, i = 0; i < 5 && parent; i++, parent = parent.parentElement) {
                 parent.querySelectorAll('input').forEach(input => {
                     const type = (input.type || 'text').toLowerCase();
-                    if (S.TYPE_BLACKLIST.includes(type)) return;
-                    if (input.disabled || input.readOnly) return;
-                    if (!input.offsetParent) return;
-                    if (!candidates.includes(input)) candidates.push(input);
+                    if (!S.TYPE_BLACKLIST.includes(type) && !input.disabled && !input.readOnly && this.#isElementVisible(input)) candidates.add(input);
                 });
-                parent = parent.parentElement;
             }
 
-            const infos = candidates.map(input => {
-                const attrs = attrCache.get(input) || `${input.id} ${input.name} ${input.className} ${input.placeholder || ''}`.toLowerCase();
-                attrCache.set(input, attrs);
-                return {
-                    input,
-                    attrs,
-                    whiteIndex: S.KEYWORD_WHITELIST.findIndex(k => attrs.includes(k)),
-                    hasBlack: S.KEYWORD_BLACKLIST.some(k => attrs.includes(k))
-                };
-            });
-
-            infos.forEach(info => {
-                if (info.whiteIndex !== -1) {
-                    const score = S.KEYWORD_WHITELIST.length - info.whiteIndex;
-                    if (score > best.score) best = { input: info.input, score };
-                    return;
+            let best = null, bestScore = -1, safe = null, safeCount = 0;
+            for (const input of candidates) {
+                const attrs = `${input.id} ${input.name} ${input.className} ${input.placeholder || ''}`.toLowerCase();
+                const whiteIndex = S.KEYWORD_WHITELIST.findIndex(k => attrs.includes(k));
+                if (whiteIndex !== -1) {
+                    const score = S.KEYWORD_WHITELIST.length - whiteIndex;
+                    if (score > bestScore) {
+                        best = input;
+                        bestScore = score;
+                    }
+                    continue;
                 }
-                if (info.hasBlack) return;
-            });
-
-            if (best.input) return best.input;
-
-            const safeFallback = infos.filter(i => !i.hasBlack).map(i => i.input);
-            if (safeFallback.length === 1) return safeFallback[0];
-            return null;
+                if (!S.KEYWORD_BLACKLIST.some(k => attrs.includes(k))) {
+                    safe = input;
+                    safeCount++;
+                }
+            }
+            if (best) return best;
+            if (safeCount !== 1) return null;
+            const attrs = `${img.currentSrc || img.src || ''} ${img.id || ''} ${img.className || ''} ${img.alt || ''} ${img.title || ''}`.toLowerCase();
+            return Config.SECURITY.STRONG_IMG_HINTS.some(k => attrs.includes(k)) ? safe : null;
         }
 
         async #process(img, force = false, inputEl = null) {
+            this.#observeImage(img);
             if (this.#processed.has(img) && !force) return;
-            this.#processed.add(img);
-
-            const feedbackEl = inputEl || img;
-
-            if (inputEl && !force && inputEl.value.trim()) {
+            if (inputEl && !this.#canWriteInput(inputEl, force)) {
                 this.#processed.delete(img);
                 return;
             }
 
-            const originStyle = feedbackEl.style.cssText;
-            feedbackEl.style.outline = '3px solid #3B82F6';
-            feedbackEl.style.transition = '0.2s';
+            const meta = this.#imgMeta.get(img);
+            if (force && meta?.controller) this.#cancelInFlight(img, 'Superseded by manual retry');
+            this.#processed.add(img);
+
+            const seq = this.#nextRunSeq(img), controller = new AbortController();
+            meta.controller = controller;
+            const feedbackEl = inputEl || img;
+            this.#setFeedback(img, seq, feedbackEl, '#3B82F6');
 
             try {
-                const base64 = await this.#captureBase64(img);
-                const res = await AI.solve(base64);
-                const clean = this.#normalizeResult(res);
+                const base64 = await this.#captureBase64(img, controller.signal);
+                this.#assertRunCurrent(img, seq);
+                const clean = this.#normalizeResult(await AI.solve(base64, { signal: controller.signal }));
+                this.#assertRunCurrent(img, seq);
 
                 if (inputEl) {
-                    inputEl.value = clean;
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (!this.#canWriteInput(inputEl, force)) return;
+                    this.#writeInput(inputEl, clean);
                     this.#inputState.set(inputEl, { lastCode: clean });
                 } else if (force) {
-                    console.log('[AI OCR][Alt+Click]', clean);
+                    console.log('[AI Captcha][Alt+Click]', clean);
                 }
 
-                feedbackEl.style.outline = '3px solid #10B981';
+                this.#retryState.delete(img);
+                this.#setFeedback(img, seq, feedbackEl, '#10B981');
             } catch (err) {
+                if (err?.name === 'AbortError') return;
                 console.error(err);
-                feedbackEl.style.outline = '3px solid #EF4444';
-                this.#processed.delete(img); // 失败允许重试
+                if (this.#isRunCurrent(img, seq)) {
+                    this.#markRetryFailure(img);
+                    this.#processed.delete(img);
+                    this.#setFeedback(img, seq, feedbackEl, '#EF4444');
+                }
             } finally {
-                setTimeout(() => feedbackEl.style.cssText = originStyle, 2000);
+                if (meta?.controller === controller) meta.controller = null;
+                this.#restoreFeedbackLater(img, seq);
             }
         }
 
         #observeImage(img) {
             if (this.#imgMeta.has(img)) return;
             const reset = () => this.#handleRefresh(img);
-
             img.addEventListener('load', reset, { passive: true });
 
             const obs = new MutationObserver(muts => {
                 if (!img.isConnected) {
+                    this.#cancelInFlight(img, 'Image removed');
+                    this.#clearFeedback(img);
+                    img.removeEventListener('load', reset);
                     obs.disconnect();
                     this.#imgMeta.delete(img);
                     return;
                 }
                 for (const m of muts) {
-                    if (m.type === 'attributes' && m.attributeName === 'src') {
+                    if (m.type === 'attributes' && (m.attributeName === 'src' || m.attributeName === 'srcset')) {
                         reset();
                         break;
                     }
                 }
             });
-            obs.observe(img, { attributes: true, attributeFilter: ['src'] });
-
-            this.#imgMeta.set(img, { observer: obs });
+            obs.observe(img, { attributes: true, attributeFilter: ['src', 'srcset'] });
+            this.#imgMeta.set(img, { controller: null, feedback: null });
         }
 
         #handleRefresh(img) {
             this.#processed.delete(img);
+            this.#retryState.delete(img);
+            this.#nextRunSeq(img);
+            this.#cancelInFlight(img, 'Image refreshed');
+            this.#clearFeedback(img);
+
             const input = this.#findInput(img);
-            if (!input) return;
-            this.#clearIfAIFilled(input);
+            if (input) this.#clearIfAIFilled(input);
         }
 
         #clearIfAIFilled(input) {
             const state = this.#inputState.get(input);
-            if (!state || !state.lastCode) return;
-            if (input.value === state.lastCode) {
-                input.value = '';
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            if (!state?.lastCode) return;
+            if (String(input?.value || '').trim() === state.lastCode) this.#writeInput(input, '');
+            this.#inputState.delete(input);
         }
 
-        async #captureBase64(img) {
-            if (!img.complete || !img.naturalWidth) await this.#waitForImage(img);
+        async #captureBase64(img, signal) {
+            await this.#waitForImage(img, 10000, signal);
+
             const w = img.naturalWidth || img.width;
             const h = img.naturalHeight || img.height;
             if (!w || !h) throw new Error('Invalid image size');
 
-            const dpr = window.devicePixelRatio || 1;
             const cvs = document.createElement('canvas');
-            cvs.width = w * dpr;
-            cvs.height = h * dpr;
+            cvs.width = w;
+            cvs.height = h;
 
             const ctx = cvs.getContext('2d');
             if (!ctx) throw new Error('No 2D context');
 
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(img, 0, 0, w, h);
             return cvs.toDataURL('image/png');
         }
 
         #normalizeResult(raw) {
-            const compact = (raw || '').replace(/\s+/g, '');
-            if (!compact) throw new Error('Empty OCR result');
-            if (!/^[A-Za-z0-9+\-*/=]+$/.test(compact)) throw new Error('Invalid captcha result');
+            const compact = String(raw || '').replace(/\s+/g, '');
+            if (!compact) throw new Error('Empty captcha result');
 
-            let cleaned = compact.replace(/=$/, '');
-            if (!cleaned) throw new Error('Invalid captcha result');
-
-            if (/^\d+[+\-*/]\d+/.test(cleaned)) {
-                try {
-                    const val = Function(`return ${cleaned}`)();
-                    if (Number.isFinite(val)) cleaned = String(val);
-                } catch {}
-            }
+            const cleaned = compact.replace(/=+$/, '');
+            if (!cleaned || !/^[A-Za-z0-9]+$/.test(cleaned)) throw new Error('Invalid captcha result');
             return cleaned;
         }
 
-        #waitForImage(img) {
-            if (img.complete && img.naturalWidth) return Promise.resolve();
+        #waitForImage(img, timeout = 10000, signal) {
+            if (signal?.aborted) return Promise.reject(this.#abortError(signal.reason));
+            if (img.complete) {
+                if (img.naturalWidth) return Promise.resolve();
+                return Promise.reject(new Error('Image already broken'));
+            }
+
             return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Image load timeout'));
+                }, timeout);
+
                 const cleanup = () => {
+                    clearTimeout(timer);
+                    signal?.removeEventListener?.('abort', onAbort);
                     img.removeEventListener('load', onLoad);
                     img.removeEventListener('error', onError);
                 };
-                const onLoad = () => { cleanup(); resolve(); };
-                const onError = () => { cleanup(); reject(new Error('Image load error')); };
+                const onLoad = () => {
+                    cleanup();
+                    if (img.naturalWidth) resolve();
+                    else reject(new Error('Image load error'));
+                };
+                const onError = () => {
+                    cleanup();
+                    reject(new Error('Image load error'));
+                };
+                const onAbort = () => {
+                    cleanup();
+                    reject(this.#abortError(signal?.reason));
+                };
+
+                signal?.addEventListener?.('abort', onAbort, { once: true });
                 img.addEventListener('load', onLoad, { once: true });
                 img.addEventListener('error', onError, { once: true });
             });
         }
+
+        #nextRunSeq(img) {
+            const seq = (this.#runSeq.get(img) || 0) + 1;
+            this.#runSeq.set(img, seq);
+            return seq;
+        }
+
+        #isRunCurrent(img, seq) {
+            return (this.#runSeq.get(img) || 0) === seq;
+        }
+
+        #assertRunCurrent(img, seq) {
+            if (this.#isRunCurrent(img, seq)) return;
+            throw this.#abortError('Stale captcha request');
+        }
+
+        #abortError(reason) {
+            const err = new Error(typeof reason === 'string' && reason ? reason : 'Request aborted');
+            err.name = 'AbortError';
+            return err;
+        }
+
+        #cancelInFlight(img, reason) {
+            const meta = this.#imgMeta.get(img);
+            if (!meta?.controller) return;
+            meta.controller.abort(reason || 'Request aborted');
+            meta.controller = null;
+        }
+
+        #markRetryFailure(img) {
+            this.#retryState.set(img, Date.now() + 5000);
+        }
+
+        #isElementVisible(el) {
+            if (!el?.isConnected) return false;
+            const style = getComputedStyle(el);
+            if (style.display === 'none') return false;
+            if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+            if (Number(style.opacity || '1') === 0) return false;
+            return el.getClientRects().length > 0;
+        }
+
+        #canWriteInput(input, force) {
+            if (!input) return true;
+            if (!this.#isElementVisible(input)) return false;
+            if (force) return true;
+
+            const current = String(input?.value || '').trim();
+            if (!current) return true;
+
+            const state = this.#inputState.get(input);
+            return !!state?.lastCode && current === state.lastCode;
+        }
+
+        #writeInput(input, value) {
+            const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc?.set) desc.set.call(input, value);
+            else input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        #setFeedback(img, seq, el, color) {
+            const meta = this.#imgMeta.get(img);
+            if (!meta) return;
+            const current = meta.feedback;
+
+            if (!current || current.seq !== seq || current.el !== el) {
+                if (current?.timer) clearTimeout(current.timer);
+                if (current?.el) current.el.style.cssText = current.originStyle;
+                meta.feedback = { seq, el, originStyle: el.style.cssText, timer: null };
+            }
+
+            if (!this.#isRunCurrent(img, seq)) return;
+            el.style.outline = `3px solid ${color}`;
+            el.style.transition = '0.2s';
+        }
+
+        #restoreFeedbackLater(img, seq) {
+            const meta = this.#imgMeta.get(img);
+            const feedback = meta?.feedback;
+            if (!feedback || feedback.seq !== seq) return;
+
+            if (feedback.timer) clearTimeout(feedback.timer);
+            feedback.timer = setTimeout(() => {
+                const currentMeta = this.#imgMeta.get(img);
+                const current = currentMeta?.feedback;
+                if (!current || current.seq !== seq) return;
+                current.el.style.cssText = current.originStyle;
+                currentMeta.feedback = null;
+            }, 2000);
+        }
+
+        #clearFeedback(img) {
+            const meta = this.#imgMeta.get(img);
+            const feedback = meta?.feedback;
+            if (!feedback) return;
+            if (feedback.timer) clearTimeout(feedback.timer);
+            feedback.el.style.cssText = feedback.originStyle;
+            meta.feedback = null;
+        }
     }
 
-    // UI: Settings
     class SettingsUI {
         static open() {
             const host = document.createElement('div');
-            const shadow = host.attachShadow({mode:'closed'});
+            const shadow = host.attachShadow({ mode: 'closed' });
             const conf = Config.get();
 
             shadow.innerHTML = `
@@ -473,6 +673,7 @@
                     const list = await ModelService.list(p, { baseUrl: $('#url').value, apiKey: $('#key').value });
                     renderModelOptions(list);
                 } catch (err) {
+                    renderModelOptions([]);
                     alert(`拉取模型失败：${err.message}`);
                 } finally {
                     btn.disabled = false;
@@ -495,16 +696,18 @@
             $('#close').onclick = () => host.remove();
             $('#save').onclick = () => {
                 const p = $('#prov').value;
-                const newC = {
+                const next = {
                     provider: p,
-                    [p]: {
-                        baseUrl: $('#url').value,
-                        apiKey: $('#key').value,
-                        model: $('#model').value,
-                        textPrompt: $('#tprompt').value
-                    }
+                    openai: { ...conf.openai },
+                    gemini: { ...conf.gemini }
                 };
-                Config.save(newC);
+                next[p] = {
+                    baseUrl: $('#url').value,
+                    apiKey: $('#key').value,
+                    model: $('#model').value,
+                    textPrompt: $('#tprompt').value
+                };
+                Config.save(next);
                 host.remove();
             };
         }
