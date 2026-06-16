@@ -1,23 +1,21 @@
-# Tampermonkey Scripts
+# Tampermonkey 脚本集
 
-This repository contains a collection of Tampermonkey userscripts.
+## 脚本展示
 
-## Directories
+### Discourse Raw → Markdown Copier
 
-- `Discourse/` — Discourse / Linux.do related scripts
-- `Github/` — GitHub enhancement scripts
-- `BiliBili/` — Bilibili related scripts
-- `Tool/` — General-purpose utility scripts
-- `Lib/` — Shared libraries and docs
-- `.images/` — Screenshots and assets used by docs/scripts
+![Discourse 帖子工具栏中的 Markdown 复制按钮](.images/Discourse/Discourse-Raw-Markdown/linux-do-topic-copy.png)
 
-## Install
+为 Discourse 帖子提供 Raw / Markdown 复制与转换能力，适合整理帖文、迁移内容和二次发布。
 
-1. Open the target `*.user.js` file.
-2. Use the raw file URL to install it in Tampermonkey.
-3. Update the script when a new version is published.
+### GitHub Toolbar Boost
 
-## Notes
+![GitHub 仓库顶部工具栏增强按钮](.images/Github/GitHubToolbarBoost/github-toolbar-boost.png)
 
-- Shared libraries live under `Lib/`.
-- Some scripts include localized descriptions and extra documentation alongside the source.
+为 GitHub 仓库顶部工具栏补充常用入口，例如 GitHub.dev、DeepWiki、CodeWiki、ZreadAi 等。
+
+### GitHub Freshness
+
+![GitHub 仓库新鲜度标签效果](.images/Github/GitHubToolbarBoost/github-toolbar-boost-1.png)
+
+为仓库文件列表与时间组件添加“新鲜度”标签，快速识别近期活跃与陈旧内容。
