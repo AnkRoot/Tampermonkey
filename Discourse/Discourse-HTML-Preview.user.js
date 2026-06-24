@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         !.Discourse HTML Preview
 // @description  Linux.do HTML 代码块预览工具：为 HTML 代码块添加眼睛图标预览按钮，并通过独立预览页执行 HTML/JS，绕开站点 CSP 对 Blob 预览的限制。
-// @version      1.4.2
+// @version      1.4.3
 // @author       ank
 // @namespace    http://010314.xyz/
 // @license      AGPL-3.0-or-later
@@ -34,7 +34,7 @@
     labels: {
       preview: '预览'
     },
-    previewRunnerUrl: 'https://cdn.jsdelivr.net/gh/AnkRoot/Tampermonkey@main/.shared/html-preview-runner/index.html'
+    previewRunnerUrl: 'https://htmlpreview.github.io/?https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/.shared/html-preview-runner/index.html'
   };
 
   GM_addStyle(`
