@@ -4,7 +4,7 @@
 // @version      1.1.2
 // @author       ank
 // @namespace    http://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        https://github.com/*
 // @grant        none
 // @run-at       document-end

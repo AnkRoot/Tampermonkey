@@ -4,7 +4,7 @@
 // @version      0.0.2
 // @author       ank
 // @namespace    https://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @run-at       document-end

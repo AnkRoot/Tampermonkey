@@ -4,7 +4,7 @@
 // @version      0.0.3
 // @author       ank
 // @namespace    https://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        https://github.com/*
 // @grant        GM_addStyle
 // @run-at       document-end

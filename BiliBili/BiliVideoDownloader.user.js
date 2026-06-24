@@ -4,7 +4,7 @@
 // @version      0.0.1
 // @author       ank
 // @namespace    https://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        *://www.bilibili.com/video/av*
 // @match        *://www.bilibili.com/video/BV*
 // @match        *://www.bilibili.com/list/*

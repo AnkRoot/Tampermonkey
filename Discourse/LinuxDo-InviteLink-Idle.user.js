@@ -4,7 +4,7 @@
 // @version      0.0.2
 // @author       ank
 // @match        https://linux.do/u/*/invited*
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_setClipboard

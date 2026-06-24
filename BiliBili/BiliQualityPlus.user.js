@@ -4,7 +4,7 @@
 // @version      0.0.2
 // @description  1. 解锁大会员画质试用（4K/8K/杜比）并自动续期；2. 自动切换视频/直播为最高画质（支持主/备画质）；3. 智能解码切换；4. Hi-Res/杜比音效自动开启；5. 独立的设置面板。
 // @author       ank
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        https://www.bilibili.com/video/*
 // @match        https://www.bilibili.com/list/*
 // @match        https://www.bilibili.com/bangumi/*

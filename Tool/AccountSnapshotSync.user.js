@@ -4,7 +4,7 @@
 // @version      1.2.3
 // @author       ank
 // @namespace    https://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue

@@ -4,7 +4,7 @@
 // @version      2.1.1
 // @author       ank
 // @namespace    http://010314.xyz/
-// @license      AGPL-3.0
+// @license      AGPL-3.0-or-later
 // @grant        none
 // @doc          https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.Doc.md
 // @test         https://raw.githubusercontent.com/AnkRoot/Tampermonkey/main/Lib/QuantumDOM/QuantumDOM.Test.html
